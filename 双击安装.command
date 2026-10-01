@@ -14,6 +14,8 @@ dest="$HOME/n8n-morning-brief"
 stop() { echo; echo "$1"; echo; read -r -p "按回车关闭这个窗口" _; exit 1; }
 if [ "$here" != "$dest" ]; then
   [ -e "$dest" ] && [ ! -f "$dest/install.sh" ] && stop "${dest} 已经存在，但不是这个项目的文件夹。请先把它改名或移走，再双击一次。"
+  # a git checkout there is someone's working copy (with history and unpublished changes): it is never replaced
+  [ -e "$dest/.git" ] && stop "${dest} 是一个 git 仓库（可能是你自己的开发副本），不会覆盖它。请先把它改名或移走，再双击一次。"
   echo "正在把安装文件放到 ${dest} ……"
   rm -rf "$dest.new" && cp -R "$here" "$dest.new" || stop "复制失败（磁盘满了？），什么都没有改动。"
   rm -rf "$dest.old"; if [ -e "$dest" ]; then mv "$dest" "$dest.old"; fi
