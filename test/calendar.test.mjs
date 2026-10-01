@@ -120,7 +120,8 @@ test('an exception written in UTC for a series written with a TZID does not show
 });
 
 test('invalid settings never crash the calendar: they fall back and are reported (review H1)', async () => {
-  const text = ics(vevent({ uid: 'a', lines: ['SUMMARY:X', 'DTSTART:20260930T010000Z', 'DTEND:20260930T020000Z'] }));
+  // (12:00 UTC is on 09-30 in every zone from UTC-11 to UTC+11: the fallback for a bad BRIEF_TZ is the zone of the machine running the test)
+  const text = ics(vevent({ uid: 'a', lines: ['SUMMARY:X', 'DTSTART:20260930T120000Z', 'DTEND:20260930T130000Z'] }));
   for (const [bad, expectedWarning] of [[{ BRIEF_TZ: 'Mars/Base' }, /BRIEF_TZ/], [{ BRIEF_EVENT_DAYS: 'abc' }, /BRIEF_EVENT_DAYS/], [{ BRIEF_EVENT_DAYS: '-2' }, /BRIEF_EVENT_DAYS/], [{ BRIEF_EVENT_DAYS: '400' }, /BRIEF_EVENT_DAYS/]]) {
     const r = await run(text, bad);
     assert.equal(r.events.length, 1); assert.match(r.warnings.join('|'), expectedWarning);
