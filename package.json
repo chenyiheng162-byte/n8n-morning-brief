@@ -1,0 +1,14 @@
+{
+  "name": "n8n-morning-brief",
+  "private": true,
+  "description": "Daily morning to-do brief delivered to Discord, powered by n8n",
+  "dependencies": {
+    "ical.js": "2.2.1",
+    "mammoth": "1.13.0",
+    "n8n": "2.41.4",
+    "unpdf": "1.8.1"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}
