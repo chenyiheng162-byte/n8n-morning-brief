@@ -15,13 +15,15 @@ const outDir = path.join(stateDir, 'extracted');
 fs.mkdirSync(inbox, { recursive: true });
 fs.mkdirSync(outDir, { recursive: true });
 
-let done = 0, failed = 0;
+let done = 0, failed = 0, pruned = 0;
+const present = new Set();
 for (const name of fs.readdirSync(inbox)) {
   const file = path.join(inbox, name);
   const ext = path.extname(name).toLowerCase();
   if (name.startsWith('.') || !fs.lstatSync(file).isFile() || !['.pdf', '.docx'].includes(ext)) continue;
   const buf = fs.readFileSync(file);
   const hash = crypto.createHash('sha256').update(buf).digest('hex');
+  present.add(hash);
   const txt = path.join(outDir, `${hash}.txt`), err = path.join(outDir, `${hash}.err`);
   if (fs.existsSync(txt)) continue;
   // A failed extraction is remembered for 6 hours (avoids hammering a broken file), then tried again. The number of
@@ -50,4 +52,13 @@ for (const name of fs.readdirSync(inbox)) {
     failed++;
   }
 }
-console.log(`extract-inbox: ${done} extracted, ${failed} failed`);
+// The text of a document that is no longer in the inbox is not needed by anything (the ingest step, the console's "show
+// text" and the reading progress all look only at files that are there), but it is the full content of that document.
+// It is removed once it is a week old, so a file taken out for a few days does not have to be extracted again.
+const KEEP_ABSENT_MS = 7 * 24 * 3600 * 1000;
+for (const f of fs.readdirSync(outDir)) {
+  const m = /^([0-9a-f]{64})\.(txt|err)$/.exec(f);
+  if (!m || present.has(m[1])) continue;
+  try { const p = path.join(outDir, f); if (Date.now() - fs.statSync(p).mtimeMs > KEEP_ABSENT_MS) { fs.rmSync(p); pruned++; } } catch (e) { /* gone already */ }
+}
+console.log(`extract-inbox: ${done} extracted, ${failed} failed${pruned ? `, ${pruned} old cache file(s) of removed documents deleted` : ''}`);
