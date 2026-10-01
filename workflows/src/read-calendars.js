@@ -27,15 +27,20 @@ function offsetMs(ms) {
   const p = parts(ms);
   return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(ms / 1000) * 1000;
 }
-function zonedMidnight(y, m, d) {
-  const guess = Date.UTC(y, m - 1, d);
+// The instant at which the clocks in tz show this wall time.
+function zonedWall(y, m, d, h = 0, mi = 0, s = 0) {
+  const guess = Date.UTC(y, m - 1, d, h, mi, s);
   return guess - offsetMs(guess - offsetMs(guess));
 }
+const zonedMidnight = (y, m, d) => zonedWall(y, m, d);
 const dayStr = (ms) => { const p = parts(ms); return `${p.year}-${p.month}-${p.day}`; };
 const hm = (ms) => { const p = parts(ms); return `${p.hour}:${p.minute}`; };
 const pad = (n) => String(n).padStart(2, '0');
 const icalDay = (t) => `${t.year}-${pad(t.month)}-${pad(t.day)}`;
 const safe = (m) => String(m || '').replace(/https?:\/\/\S+/g, '<链接>').slice(0, 120); // calendar links are secrets
+// A time without a zone ("floating", RFC 5545 §3.3.5) is that wall-clock time wherever you are: here, BRIEF_TZ. ical.js
+// would read it in the zone of the process that runs this node, which need not be BRIEF_TZ (n8n's task runner, a test).
+const msOf = (t) => (!t.isDate && (!t.zone || t.zone === ICAL.Timezone.localTimezone) ? zonedWall(t.year, t.month, t.day, t.hour, t.minute, t.second) : t.toJSDate().getTime());
 
 // BRIEF_TODAY (YYYY-MM-DD) pins "today" for tests; otherwise use the real clock.
 const pin = /^(\d{4})-(\d{2})-(\d{2})$/.exec($env.BRIEF_TODAY || '');
@@ -59,8 +64,8 @@ function addOccurrence(title, location, start, end, sink = out) {
     if (!(e > today && s < endDay)) return;
     sink.set(`${title}|${s}|${e}`, { title, location, allDay: true, startDay: s, endDay: e });
   } else {
-    const sMs = start.toJSDate().getTime();
-    const eMs = end.toJSDate().getTime();
+    const sMs = msOf(start);
+    const eMs = msOf(end);
     if (!(sMs < windowEnd && Math.max(eMs, sMs + 1) > windowStart)) return;
     const day = sMs < windowStart ? today : dayStr(sMs);
     sink.set(`${title}|${sMs}|${eMs}`, { title, location, allDay: false, day, endDay: dayStr(Math.max(eMs - 1, sMs)), startMs: sMs, endMs: eMs, startHM: hm(sMs), endHM: hm(eMs) });
@@ -118,6 +123,10 @@ function synthTimezone(tzid) {
   return new ICAL.Component(ICAL.parse(`BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${lines.join('\r\n')}\r\nEND:VCALENDAR`)).getFirstSubcomponent('vtimezone');
 }
 const unknownZones = new Set();
+// A series is followed from its first instance. One that started long ago and repeats often (daily since the 1960s,
+// hourly for years) can need more steps than are allowed before it reaches today: it is then reported, never just missing.
+const MAX_STEPS = 20000;
+const tooLong = new Set();
 function parseCalendar(text) {
   const comp = new ICAL.Component(ICAL.parse(text));
   if (comp.name !== 'vcalendar') throw new Error('not an iCalendar file');
@@ -159,8 +168,8 @@ function expandCalendar(comp) {
     master.relateException(x);
     const isRange = String(v.getFirstProperty('recurrence-id').getParameter('range') || '').toUpperCase() === 'THISANDFUTURE';
     if (isRange && rid && x.startDate) {
-      const shift = (x.startDate.isDate ? Date.UTC(x.startDate.year, x.startDate.month - 1, x.startDate.day) : x.startDate.toJSDate().getTime())
-                  - (rid.isDate ? Date.UTC(rid.year, rid.month - 1, rid.day) : rid.toJSDate().getTime());
+      const shift = (x.startDate.isDate ? Date.UTC(x.startDate.year, x.startDate.month - 1, x.startDate.day) : msOf(x.startDate))
+                  - (rid.isDate ? Date.UTC(rid.year, rid.month - 1, rid.day) : msOf(rid));
       if (shift < 0) slack.set(uid, Math.max(slack.get(uid) || 0, -shift));
     }
   }
@@ -174,9 +183,14 @@ function expandCalendar(comp) {
     const scanEndDay = dayStr(scanEndMs);
     const it = ev.iterator();
     let next;
-    let guard = 0;
-    while ((next = it.next()) && guard++ < 20000) {
-      const startMs = next.isDate ? Date.UTC(next.year, next.month - 1, next.day) : next.toJSDate().getTime();
+    let steps = 0;
+    while ((next = it.next())) {
+      if (++steps > MAX_STEPS) {
+        const until = (ev.component.getFirstPropertyValue('rrule') || {}).until; // a series that ended long ago is not worth a warning
+        if (!(until && (until.isDate ? icalDay(until) < today : msOf(until) < windowStart))) tooLong.add(String(ev.summary || '(无标题)').replace(/[\\*_~|>`\[\]()\r\n]/g, ' ').trim().slice(0, 30));
+        break;
+      }
+      const startMs = next.isDate ? Date.UTC(next.year, next.month - 1, next.day) : msOf(next);
       if (next.isDate ? icalDay(next) >= scanEndDay : startMs >= scanEndMs) break;
       if (overridden.has(idKey(uid, next))) continue; // this instance carries its own exception: placed below by its own times
       const d = ev.getOccurrenceDetails(next);          // instances shifted by a THISANDFUTURE change come back already shifted
@@ -210,4 +224,8 @@ for (const f of fetched) {
 }
 
 const events = [...out.values()].sort((a, b) => (a.allDay === b.allDay ? (a.startMs || 0) - (b.startMs || 0) : a.allDay ? -1 : 1));
-return [{ json: { tz, today, days: lookahead, calendars: urls.length, events, errors, failed, cached, warnings: S.warnings.concat(unknownZones.size ? [`日历里有无法识别的时区「${[...unknownZones].join('、')}」，这些日程按本机时区显示，时间可能不对`] : []), timing: { fetchMs: t2 - t1, parseMs: Date.now() - t2, totalMs: Date.now() - t0 } } }];
+const notes = [
+  ...(unknownZones.size ? [`日历里有无法识别的时区「${[...unknownZones].join('、')}」，这些日程按本机时区显示，时间可能不对`] : []),
+  ...(tooLong.size ? [`日历里有 ${tooLong.size} 个重复日程开始得太早、重复太频繁（「${[...tooLong].slice(0, 3).join('」「')}」），没能展开到今天，简报里不会出现：请在日历里把它的开始日期改近一些`] : []),
+];
+return [{ json: { tz, today, days: lookahead, calendars: urls.length, events, errors, failed, cached, warnings: S.warnings.concat(notes), timing: { fetchMs: t2 - t1, parseMs: Date.now() - t2, totalMs: Date.now() - t0 } } }];
