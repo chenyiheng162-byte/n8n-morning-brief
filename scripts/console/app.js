@@ -406,7 +406,8 @@ async function viewSetup(view) {
 async function viewTasks(view) {
   let data = await api('/api/tasks');
   if (data.error) { view.replaceChildren(h('div', { class: 'card empty' }, h('div', { class: 'ico' }, icon('triangle-alert', 'lg')), h('b', {}, '任务表读不了'), data.error, h('div', { class: 'small' }, '可能是表头被改坏了，可以用 tasks.csv.bak 恢复。'))); return; }
-  let filter = 'active'; let q = ''; const changes = new Map(); const adds = []; let adding = false;
+  // Freshly extracted tasks wait as 待确认; when there are any, that list is what needs the user, so open on it.
+  let filter = data.rows.some((r) => r._kind === 'pending') ? 'pending' : 'active'; let q = ''; const changes = new Map(); const adds = []; let adding = false;
   const KIND = { '待确认': 'pending', '进行中': 'active', '完成': 'done', '忽略': 'ignored' };
   const valueOf = (r, k) => (changes.get(r._i)?.[k] ?? r[k] ?? '');
   const kindOf = (r) => (changes.get(r._i)?.['状态'] !== undefined ? (KIND[changes.get(r._i)['状态']] || 'unknown') : r._kind);
@@ -430,7 +431,11 @@ async function viewTasks(view) {
   function statusSel(r) {
     const v = valueOf(r, '状态');
     const sel = h('select', { class: `stsel st-${KIND[v] || 'pending'}`, 'aria-label': '状态', onchange: (e) => { setField(r, '状态', e.target.value); drawAll(); } }, [...new Set([...data.statuses, v])].map((x) => h('option', { value: x, selected: x === v }, x)));
-    return h('span', { class: 'selwrap' }, sel, icon('chevron-right'));
+    const wrap = h('span', { class: 'selwrap' }, sel, icon('chevron-right'));
+    if (KIND[v] !== 'pending') return wrap;
+    // One click instead of a dropdown for the common decisions on a freshly extracted task.
+    const quick = (label, status, cls, title) => h('button', { class: `btn sm ${cls}`, title, type: 'button', onclick: () => { setField(r, '状态', status); drawAll(); } }, label);
+    return h('div', { class: 'quick' }, wrap, quick([icon('check', 'sm'), '确认'], '进行中', 'primary', '确认为进行中（会进简报）'), quick('忽略', '忽略', 'ghost', '不是任务或不想跟进：忽略'));
   }
   const inp = (r, k, type = 'text', ph = '') => h('input', { type, placeholder: ph, 'aria-label': k, value: type === 'date' ? (/^\d{4}-\d{2}-\d{2}$/.test(valueOf(r, k)) ? valueOf(r, k) : '') : valueOf(r, k), oninput: (e) => { setField(r, k, e.target.value); e.target.closest('tr').classList.toggle('dirty', changes.has(r._i)); } });
   function dueBadge(d) { const rd = relDay(d); if (!rd) return ''; const cls = rd.startsWith('逾期') ? 't-bad' : (rd === '今天' || rd === '明天') ? 't-warn' : 't-gray'; return h('span', { class: `due badge ${cls}` }, rd); }
@@ -452,12 +457,18 @@ async function viewTasks(view) {
     const empty = !rows.length && !adds.length && !adding;
     tableHost.replaceChildren(empty ? h('div', { class: 'card empty' }, h('div', { class: 'ico' }, icon('list-checks', 'lg')), h('b', {}, filter === 'pending' ? '没有待确认的任务' : '这里还没有任务'), h('div', { class: 'small' }, '点「新任务」手动加，或把课程大纲放进收件箱，让 AI 找出来。'))
       : h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['状态', '任务', '分类', '截止日', '备注', '来源'].map((x) => h('th', {}, x)))), h('tbody', {}, newRow, addRows, body))));
-    bulk.classList.toggle('hidden', !(filter === 'pending' && c.pending));
+    bulk.classList.toggle('hidden', !c.pending); bulkLabel.textContent = `全部 ${c.pending} 项确认为进行中`;
     drawBar(); if (adding) setTimeout(() => f.t.focus(), 0);
   }
-  const bulk = h('button', { class: 'btn sm', onclick: () => { for (const r of data.rows) if (kindOf(r) === 'pending') setField(r, '状态', '进行中'); drawAll(); } }, icon('check', 'sm'), '全部确认为进行中');
+  const bulkLabel = h('span');
+  const bulk = h('button', { class: 'btn sm', onclick: async () => {
+    const n = counts().pending; if (!n) return;
+    if (!(await confirmBox('全部确认', `把 ${n} 项待确认任务都改成「进行中」并保存到任务表${isDirty() ? '（表里其他没保存的修改也会一起保存）' : ''}。不想要的可以之后再改成「忽略」。`, '全部确认并保存'))) return;
+    for (const r of data.rows) if (kindOf(r) === 'pending') setField(r, '状态', '进行中');
+    await save();
+  } }, icon('check', 'sm'), bulkLabel);
   const search = h('div', { class: 'search' }, icon('search'), h('input', { type: 'search', placeholder: '搜索任务、分类、备注', oninput: (e) => { q = e.target.value.trim().toLowerCase(); drawAll(); } }));
-  $('#subtitle').textContent = '直接在表里改。只有「进行中」会进简报；保存时先备份，并确认没有别处同时在改。';
+  $('#subtitle').textContent = '直接在表里改。只有「进行中」会进简报；待确认的可以逐条点「确认」，或一键全部确认。保存时先备份，并确认没有别处同时在改。';
   view.replaceChildren(h('div', { class: 'toolbar' }, segHost, bulk, h('span', { class: 'spacer' }), search, h('a', { class: 'btn icon', href: '/api/tasks/download', title: '下载任务表（CSV）', 'aria-label': '下载任务表' }, icon('download')), h('button', { class: 'btn primary', onclick: () => { adding = true; filter = filter === 'active' || filter === 'all' ? filter : 'active'; drawAll(); } }, icon('plus'), '新任务')), tableHost, barHost);
   drawAll();
 }
@@ -637,9 +648,11 @@ function renderBrief(text) {
   }
   return h('div', { class: 'discord' }, h('div', { class: 'who' }, h('div', { class: 'av' }, icon('sunrise')), h('div', {}, h('b', {}, '每日简报'), h('small', {}, '预览 · 不会发送'))), box);
 }
+let dismissedJob = null; // the user closed the drawer of this job: keep it closed, the toast from poll() reports how it ended
 function showJob(j) {
   if (!j || !j.id) return;
   const host = $('#drawerHost'); const running = j.state === 'running';
+  if (dismissedJob === j.id) { if (!running) dismissedJob = null; return; }
   const secs = Math.round(((j.endedAt || Date.now()) - j.startedAt) / 1000);
   let body;
   if (j.kind === 'preview' && j.state === 'done') {
@@ -650,8 +663,17 @@ function showJob(j) {
     const term = h('div', { class: 'term' }, h('div', { style: 'padding:8px 0' }, (j.output || (running ? '开始……' : '（没有输出）')).split('\n').map((l, i) => h('div', { class: 'ln' }, h('span', { class: 'no' }, i + 1), h('span', { class: 'tx' }, l || ' ')))));
     body = term;
   }
-  const status = running ? h('div', { class: 'spin' }) : h('span', { class: `badge ${j.state === 'done' ? 't-ok' : 't-bad'}` }, h('span', { class: 'dot' }), j.state === 'done' ? '完成' : '失败');
-  const drawer = h('div', { class: 'drawer', role: 'status' }, h('header', {}, status, h('b', {}, j.label), h('span', { class: 'faint small num' }, `${secs} 秒`), h('button', { class: 'btn ghost sm icon', 'aria-label': '关闭', onclick: () => host.replaceChildren() }, icon('x', 'sm'))), h('div', { class: 'body' }, body));
+  const status = running ? h('div', { class: 'spin', 'data-role': 'status' }) : h('span', { class: `badge ${j.state === 'done' ? 't-ok' : 't-bad'}`, 'data-role': 'status' }, h('span', { class: 'dot' }), j.state === 'done' ? '完成' : '失败');
+  const open = host.firstElementChild;
+  if (open && open.dataset.job === String(j.id)) {
+    // Same job as the drawer already on screen: refresh its parts in place. Rebuilding the drawer every second replayed
+    // its entrance animation, so a 100-second job looked like 100 pop-ups.
+    open.querySelector('[data-role="status"]').replaceWith(status); open.querySelector('[data-role="secs"]').textContent = `${secs} 秒`;
+    const b = open.querySelector('.body'); const follow = running && b.scrollTop + b.clientHeight >= b.scrollHeight - 8;
+    b.replaceChildren(body); if (follow) b.scrollTop = b.scrollHeight;
+    return;
+  }
+  const drawer = h('div', { class: 'drawer', role: 'status', 'data-job': String(j.id) }, h('header', {}, status, h('b', {}, j.label), h('span', { class: 'faint small num', 'data-role': 'secs' }, `${secs} 秒`), h('button', { class: 'btn ghost sm icon', 'aria-label': '关闭', onclick: () => { host.replaceChildren(); dismissedJob = j.id; } }, icon('x', 'sm'))), h('div', { class: 'body' }, body));
   host.replaceChildren(drawer);
   const b = drawer.querySelector('.body'); if (running) b.scrollTop = b.scrollHeight;
 }
