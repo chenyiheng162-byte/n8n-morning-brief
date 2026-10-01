@@ -43,7 +43,7 @@ if [[ "$args" == *"/webhook/"* ]]; then
   esac
   exit 0
 fi
-if [[ "$args" == *"-K -"* ]]; then cat > /dev/null; echo x >> "$D/alerts"; printf '204'; exit 0; fi   # an alert: the URL comes from stdin
+if [[ "$args" == *"-K -"* ]]; then cat > /dev/null; echo x >> "$D/alerts"; prev=""; for a in "$@"; do [ "$prev" = "--data" ] && echo "$a" >> "$D/alert-bodies"; prev="$a"; done; printf '204'; exit 0; fi   # an alert: the URL comes from stdin
 exit 0
 `;
 const N8N = `#!/bin/bash
@@ -54,7 +54,7 @@ const d = process.env.STUB_DIR; fs.appendFileSync(d + '/direct.calls', process.a
 if (process.argv.includes('--dry-run')) { console.log('DRY-RUN PREVIEW TEXT'); process.exit(0); }
 if (process.env.STUB_DIRECT === 'fail') { console.error('direct engine failed'); process.exit(1); }
 if (process.env.STUB_DIRECT === 'killed') { const run = (process.argv.find((a) => a.startsWith('--run=')) || '').slice(6); fs.writeFileSync(process.env.BRIEF_HOME + '/data/state/attempt-' + run, 'x'); process.kill(process.pid, 'SIGKILL'); }
-if (process.env.STUB_DIRECT === 'notsent') { console.error('brief.mjs failed: Discord: 404 Unknown Webhook'); process.exit(4); }
+if (process.env.STUB_DIRECT === 'notsent') { console.error('brief.mjs failed: ' + (process.env.STUB_REASON || 'Discord: 404 Unknown Webhook')); process.exit(4); }
 fs.appendFileSync(d + '/direct.state', (process.env.BRIEF_STATE_DIR || '') + '\\n');
 if (process.env.STUB_DIRECT === 'unknown') { console.error('the request to Discord may have been delivered'); process.exit(3); }
 console.log(JSON.stringify({ status: 'sent', engine: 'direct', events: 1, tasks: 0, newTasks: 0, aiCalls: 0 }));
@@ -317,6 +317,22 @@ test('logs older than 30 days and a huge n8n log are cleaned up after a successf
   const oldLog = path.join(sb.home, 'logs', 'run-2020-01-01.log'); fs.writeFileSync(oldLog, 'x'); const past = new Date(Date.now() - 40 * 86400000); fs.utimesSync(oldLog, past, past);
   fs.writeFileSync(path.join(sb.home, 'logs', 'n8n-run.log'), 'y'.repeat(6 * 1024 * 1024));
   run(sb, 'ok'); assert.equal(fs.existsSync(oldLog), false); assert.ok(fs.statSync(path.join(sb.home, 'logs', 'n8n-run.log')).size <= 1048576 + 200);
+});
+
+test('the direct engine tidies old logs and day markers too (it ends the script before the n8n part does)', () => {
+  const sb = sandbox(); fs.mkdirSync(path.join(sb.home, 'logs'), { recursive: true }); fs.mkdirSync(sb.state, { recursive: true });
+  const past = new Date(Date.now() - 40 * 86400000);
+  const oldLog = path.join(sb.home, 'logs', 'run-2020-01-01.log'); const oldMarker = path.join(sb.state, 'sent-2020-01-01');
+  for (const f of [oldLog, oldMarker]) { fs.writeFileSync(f, 'x'); fs.utimesSync(f, past, past); }
+  const r = run(sb, 'ok', { BRIEF_ENGINE: 'direct' }); assert.equal(r.status, 0, r.log); assert.ok(r.marker);
+  assert.equal(fs.existsSync(oldLog), false); assert.equal(fs.existsSync(oldMarker), false);
+});
+
+test('a Discord alert is valid JSON whatever its reason contains, and can never ping anyone', () => {
+  const sb = sandbox(); const r = run(sb, 'ok', { BRIEF_ENGINE: 'direct', STUB_DIRECT: 'notsent', STUB_REASON: 'Discord: 400 "bad"\tfield @everyone \\ end' });
+  assert.equal(r.status, 1, r.log); assert.equal(r.alerts, 1);
+  const body = JSON.parse(read(path.join(sb.stub, 'alert-bodies')).trim().split('\n')[0]);
+  assert.deepEqual(body.allowed_mentions, { parse: [] }); assert.match(body.content, /"bad" field @everyone \\ end/);
 });
 
 test('settings lines that are not understood are logged, and the run still uses the good ones (review M3)', () => {
