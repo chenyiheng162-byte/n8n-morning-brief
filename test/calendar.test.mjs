@@ -212,6 +212,7 @@ for (const z of ['with', 'without']) {
 }
 test('a zone name that is not an IANA name is reported instead of guessed (review F5)', () => {
   const r = probe('windows', 'without'); assert.equal(r.failed, 0); assert.match(r.warnings.join(), /无法识别的时区/); assert.match(r.warnings.join(), /Beijing/);
+  assert.match(r.warnings.join(), /按 Asia\/Hong_Kong 显示/); assert.deepEqual(r.events, ['2026-09-30 09:00 Odd zone'], 'read as a wall time in BRIEF_TZ, whatever zone the machine is in');
 });
 
 // ================= final review =================

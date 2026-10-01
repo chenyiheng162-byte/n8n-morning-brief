@@ -100,7 +100,7 @@ const idKey = (uid, t) => (t.isDate ? `${uid}|d|${icalDay(t)}` : `${uid}|t|${t.t
 
 // A time zone that the feed uses but does not define (some timetable systems omit the VTIMEZONE block) would be read by
 // ical.js as a local time of THIS machine. Build a definition for real IANA names from the system's own time zone data;
-// names that are not IANA (for example Windows names) are reported instead of guessed.
+// names that are not IANA (for example Windows names) are reported, and read like floating times (in BRIEF_TZ).
 function synthTimezone(tzid) {
   let fmt;
   try { fmt = new Intl.DateTimeFormat('en-US', { timeZone: tzid, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch (e) { return null; }
@@ -225,7 +225,7 @@ for (const f of fetched) {
 
 const events = [...out.values()].sort((a, b) => (a.allDay === b.allDay ? (a.startMs || 0) - (b.startMs || 0) : a.allDay ? -1 : 1));
 const notes = [
-  ...(unknownZones.size ? [`日历里有无法识别的时区「${[...unknownZones].join('、')}」，这些日程按本机时区显示，时间可能不对`] : []),
+  ...(unknownZones.size ? [`日历里有无法识别的时区「${[...unknownZones].join('、')}」，这些日程按 ${tz} 显示，时间可能不对`] : []),
   ...(tooLong.size ? [`日历里有 ${tooLong.size} 个重复日程开始得太早、重复太频繁（「${[...tooLong].slice(0, 3).join('」「')}」），没能展开到今天，简报里不会出现：请在日历里把它的开始日期改近一些`] : []),
 ];
 return [{ json: { tz, today, days: lookahead, calendars: urls.length, events, errors, failed, cached, warnings: S.warnings.concat(notes), timing: { fetchMs: t2 - t1, parseMs: Date.now() - t2, totalMs: Date.now() - t0 } } }];
