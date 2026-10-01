@@ -42,4 +42,4 @@ mkdir -p "$OUT"; rm -f "$ZIP"
 (cd "$WORK" && COPYFILE_DISABLE=1 zip -qrX "$ZIP" "$NAME")
 echo "安装包：${ZIP}（$(du -h "$ZIP" | cut -f1)，$(unzip -l "$ZIP" | tail -1 | awk '{print $2}') 个文件，版本 ${REV}）"
 echo "检查通过：对照了 config.local.env 里的 ${checked} 个真实值、密钥样式、主目录、用户名和邮箱。"
-echo "朋友收到后看 安装说明.md：解压，然后在终端运行 bash（空格）再把 install.sh 拖进去，回车。"
+echo "朋友收到后：解压，双击「双击安装.command」（第一次要在「系统设置 → 隐私与安全性」点「仍要打开」）；或者用一行命令安装，见 安装说明.md。"
