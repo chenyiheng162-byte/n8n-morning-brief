@@ -56,8 +56,9 @@ export function acquireLock(stateDir, tag = '') {
       let legacy;
       try { legacy = legacyTake(stateDir, tag); } catch { legacy = { ok: false, holder: 'error' }; }
       if (!legacy.ok) { releaseGuard().then(() => finish({ ok: false, holder: legacy.holder })); return; }
-      const release = async () => { legacyRelease(legacy.dir); await releaseGuard(); };
-      process.once('exit', () => legacyRelease(legacy.dir)); // also when the process ends without releasing
+      const onExit = () => legacyRelease(legacy.dir); // also when the process ends without releasing
+      process.once('exit', onExit);
+      const release = async () => { process.off('exit', onExit); legacyRelease(legacy.dir); await releaseGuard(); };
       finish({ ok: true, release });
     });
     // (once we had the lock, the guard ending is our own release -- the outcome was decided above)

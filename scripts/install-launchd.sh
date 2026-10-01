@@ -72,7 +72,15 @@ PREV=""
 if [ -f "$PLIST" ]; then PREV="$(mktemp "$PLIST.prev.XXXXXX")"; cp "$PLIST" "$PREV"; fi
 mv "$NEWPLIST" "$PLIST"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-if ! launchctl bootstrap "gui/$(id -u)" "$PLIST"; then
+# launchd often answers "Input/output error" or "Operation already in progress" when asked to load a job it just
+# removed: that goes away within a second or two, so try a few times before giving up.
+bootstrap_ok=0
+for attempt in 1 2 3 4 5; do
+  if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>"$PLIST.err"; then bootstrap_ok=1; break; fi
+  [ "$attempt" -lt 5 ] && sleep 1
+done
+[ -s "$PLIST.err" ] && [ "$bootstrap_ok" = 0 ] && cat "$PLIST.err" >&2; rm -f "$PLIST.err"
+if [ "$bootstrap_ok" != 1 ]; then
   # Loading the new definition failed: put the old job back, so the morning brief still has a schedule.
   echo "ERROR: launchctl could not load the new schedule." >&2
   if [ -n "$PREV" ]; then

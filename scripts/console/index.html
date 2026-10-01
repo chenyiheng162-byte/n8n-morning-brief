@@ -307,6 +307,9 @@ td input[type]:focus { border-color: var(--accent); background: var(--card); box
 .drawer { position: fixed; right: 20px; bottom: 20px; z-index: 60; width: min(580px, calc(100vw - 40px)); max-height: 72vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lg); overflow: hidden; animation: rise2 .2s ease-out; }
 @keyframes rise2 { from { transform: translateY(12px); opacity: 0; } }
 .quick { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.savebar { z-index: 65; }
+body:has(.savebar) .drawer { bottom: 84px; max-height: calc(72vh - 64px); }
+.drop.busy { opacity: .7; pointer-events: none; }
 .drawer header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .drawer header b { flex: 1; font-size: 14px; }
 .drawer .body { overflow: auto; padding: 14px; }

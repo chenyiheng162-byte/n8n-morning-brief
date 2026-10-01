@@ -23,9 +23,15 @@ test('send: success needs a message id; the attempt is on disk BEFORE the reques
   assert.equal((await send(async () => ({}))).status, 'unknown', 'no id: it may or may not be stored');
 });
 test('send: a server error, a timeout or a broken connection is UNKNOWN and is NOT repeated', async () => {
-  for (const e of [err({ httpCode: 500 }), err({ response: { status: 502 } }), err({}, 'timeout of 30000ms exceeded'), err({ code: 'ECONNRESET' }), err({ cause: { code: 'UND_ERR_SOCKET' } }, 'fetch failed')]) {
+  for (const e of [err({ httpCode: 500 }), err({ response: { status: 504 } }), err({}, 'timeout of 30000ms exceeded'), err({ code: 'ECONNRESET' }), err({ cause: { code: 'UND_ERR_SOCKET' } }, 'fetch failed')]) {
     const r = await send(async () => { throw e; }); assert.equal(r.status, 'unknown', e.message); assert.equal(r.calls.length, 1, 'never repeated');
   }
+});
+test('send: a 502/503 from the gateway (the request was not taken) is retried, and only then UNKNOWN', { timeout: 30000 }, async () => {
+  const bg = await send(async (n) => { if (n === 1) throw err({ response: { status: 502 } }); return { id: '9' }; });
+  assert.equal(bg.status, 'sent'); assert.equal(bg.calls.length, 2);
+  const down = await send(async () => { throw err({ httpCode: 503 }); });
+  assert.equal(down.status, 'unknown'); assert.equal(down.calls.length, 3, 'two retries, then it stops');
 });
 test('send: a refusal is NOT_SENT; a rate limit and a connection that never opened are retried', { timeout: 30000 }, async () => {
   assert.equal((await send(async () => { throw err({ httpCode: 404 }); })).status, 'not_sent');
