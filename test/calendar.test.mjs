@@ -238,3 +238,19 @@ test('the text "TZID=" inside a description is not taken for a time zone (review
 test('time properties written in lower case still get their time zone (review R6-06)', () => {
   assert.deepEqual(probe('lower', 'without').events, ['2026-10-01 16:00 London class']);
 });
+
+test('a time without a zone (floating) is that wall-clock time in BRIEF_TZ, whatever zone the process runs in', async () => {
+  // two zones: at most one of them can be the zone of the machine running the test, so the other one checks the rule
+  for (const tz of ['Asia/Hong_Kong', 'America/New_York']) {
+    const r = await run(ics(vevent({ uid: 'fl', lines: ['SUMMARY:Floating', 'DTSTART:20261001T090000', 'DTEND:20261001T100000', 'RRULE:FREQ=DAILY;COUNT=5'] })), { BRIEF_TZ: tz });
+    assert.deepEqual(r.events.map((e) => `${e.day} ${e.startHM}-${e.endHM}`).slice(0, 2), ['2026-10-01 09:00-10:00', '2026-10-02 09:00-10:00'], tz);
+  }
+});
+
+test('a series too long to follow up to today is reported instead of silently missing; one that ended long ago is not', async () => {
+  const r = await run(ics(vevent({ uid: 'old', lines: ['SUMMARY:Daily *standup*', 'DTSTART:19600101T010000Z', 'DTEND:19600101T013000Z', 'RRULE:FREQ=DAILY'] })));
+  assert.equal(r.errors.length, 0);
+  assert.ok(r.warnings.some((w) => /1 个重复日程开始得太早/.test(w) && w.includes('Daily  standup')), JSON.stringify(r.warnings));
+  const ended = await run(ics(vevent({ uid: 'end', lines: ['SUMMARY:Old hourly', 'DTSTART:20100101T000000Z', 'DTEND:20100101T001000Z', 'RRULE:FREQ=HOURLY;UNTIL=20150101T000000Z'] })));
+  assert.deepEqual(ended.warnings, []); assert.deepEqual(ended.events, []);
+});
