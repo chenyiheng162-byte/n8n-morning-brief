@@ -340,6 +340,23 @@ test('one-line install: a folder of the same name that is not ours is left alone
   assert.ok(!fs.existsSync(path.join(home2, 'n8n-morning-brief')) && !fs.existsSync(path.join(home2, 'ran.txt')), 'half a script runs nothing');
 });
 
+test('one-line install: a git checkout at ~/n8n-morning-brief (a working copy with history) is never replaced', () => {
+  const home = tmpdir('get-home-'); const dest = fakeProject(path.join(home, 'n8n-morning-brief'), 'mine'); fs.mkdirSync(path.join(dest, '.git'));
+  const r = pipeGet(home, tarball('v2'));
+  assert.notEqual(r.status, 0); assert.match(r.stderr, /是一个 git 仓库/);
+  assert.equal(fs.readFileSync(path.join(dest, 'VERSION'), 'utf8'), 'mine'); assert.ok(fs.existsSync(path.join(dest, '.git'))); assert.ok(!fs.existsSync(path.join(home, 'ran.txt')));
+});
+
+test('double-click install: a git checkout at ~/n8n-morning-brief is never replaced either', () => {
+  const sandboxHome = tmpdir('dbl-home-'); fs.writeFileSync(path.join(sandboxHome, '.brief-sandbox-home'), '');
+  const dest = fakeProject(path.join(sandboxHome, 'n8n-morning-brief'), 'mine'); fs.mkdirSync(path.join(dest, '.git'));
+  const unpacked = fakeProject(path.join(sandboxHome, 'Downloads', 'n8n-morning-brief'), 'v2');
+  fs.copyFileSync(path.join(ROOT, '双击安装.command'), path.join(unpacked, '双击安装.command'));
+  const r = spawnSync('bash', [path.join(unpacked, '双击安装.command')], { input: '\n', encoding: 'utf8', env: { PATH: process.env.PATH, HOME: tmpdir('dbl-realhome-') } });
+  assert.notEqual(r.status, 0); assert.match(r.stdout, /是一个 git 仓库/);
+  assert.equal(fs.readFileSync(path.join(dest, 'VERSION'), 'utf8'), 'mine'); assert.ok(fs.existsSync(path.join(dest, '.git'))); assert.ok(!fs.existsSync(path.join(sandboxHome, 'ran.txt')));
+});
+
 test('double-click install: the .command copies its folder to ~/n8n-morning-brief and starts install.sh there (a marked test folder plays home)', () => {
   const sandboxHome = tmpdir('dbl-home-'); fs.writeFileSync(path.join(sandboxHome, '.brief-sandbox-home'), '');
   const unpacked = fakeProject(path.join(sandboxHome, 'Library', 'WeChat', 'files', 'n8n-morning-brief'));
