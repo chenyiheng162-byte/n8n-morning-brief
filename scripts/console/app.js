@@ -162,7 +162,7 @@ async function viewOverview(view, quiet = false) {
   let tone = 't-accent', ic = 'clock-3', big = '今天的简报还没发送', meta = o.nextRun ? '' : '没有安装定时任务';
   if (t.state === 'sent') { tone = 't-ok'; ic = 'circle-check'; big = '今天的简报已送达'; meta = `${t.sentAt || ''} 由 ${t.engine === 'direct' ? '直连模式' : 'n8n'} 发送${slot && t.sentAt && toMin(t.sentAt.slice(0, 5)) <= toMin(slot) + 10 ? ' · 准点' : slot && t.sentAt ? ' · 晚于计划（电脑当时可能在睡眠或没接电源）' : ''}`; }
   else if (t.state === 'unknown') { tone = 't-warn'; ic = 'circle-help'; big = '今天的发送结果不明'; meta = '请求已发出但没有得到明确回答。为避免重复不会自动重发；没收到的话可以补发。'; }
-  else if (t.state === 'failed') { tone = 't-bad'; ic = 'circle-x'; big = '今天的发送失败了'; meta = '后面的重试时间点还会再试，原因见日志。'; }
+  else if (t.state === 'failed') { tone = 't-bad'; ic = 'circle-x'; big = '今天的发送失败了'; meta = o.nextRun && new Date(o.nextRun).toDateString() === new Date().toDateString() ? '后面的重试时间点还会再试，原因见日志。' : '今天的重试时间点都已经过了，可以在下面补发；原因见日志。'; }
   const clockVal = h('b', { class: 'num' }); const nextLabel = o.nextRun ? new Date(o.nextRun).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
   const tick = () => { if (o.nextRun) clockVal.textContent = hms(Math.round((new Date(o.nextRun) - Date.now()) / 1000)); };
   tick(); const timer = setInterval(() => { if (!document.body.contains(clockVal)) clearInterval(timer); else tick(); }, 1000);

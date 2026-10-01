@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { ROOT, DEPS_HOME, tmpdir, ics, vevent, holdLock, lockHeld } from './helpers.mjs';
-import { makeContext, createServer, parseConfig, applyConfigChanges, validate } from '../scripts/console.mjs';
+import { makeContext, createServer, parseConfig, applyConfigChanges, validate, nextRun } from '../scripts/console.mjs';
 
 const SECRETS = { hook: 'https://discord.com/api/webhooks/1234/SECRET-HOOK-TOKEN', key: 'sk-THIS_KEY_MUST_NEVER_SHOW_1234', ics: 'https://calendar.google.com/calendar/ical/me/private-SECRETCALTOKEN/basic.ics', token: 'feedbeef'.repeat(6) };
 const CONFIG = `# my settings\nDISCORD_WEBHOOK_URL='${SECRETS.hook}'\nAI_API_KEY='${SECRETS.key}'\nAI_BASE_URL='https://api.deepseek.com'\nAI_MODEL='deepseek-chat'\nICS_URLS='${SECRETS.ics} ${SECRETS.ics}'\nBRIEF_TOKEN='${SECRETS.token}'\nBRIEF_IGNORE="Recess|Lunch"\nBRIEF_SOMETHING='x'\nthis line is broken\n`;
@@ -430,4 +430,17 @@ test('scripts started by the console get its own job label, so a console of anot
   const sb = await sandbox();
   assert.equal(sb.ctx.childEnv().BRIEF_LABEL, 'test.console');
   assert.equal(makeContext({ home: sb.home }).childEnv().BRIEF_LABEL, process.env.BRIEF_LABEL || 'com.cc-workspace.n8n-morning-brief');
+});
+
+test('console: the countdown points at the next slot that will really try to send', () => {
+  const slots = ['08:00', '08:20', '08:40', '09:30'];
+  const at = (hm) => { const [h, m] = hm.split(':').map(Number); return new Date(2026, 9, 1, h, m, 0, 0); };
+  const local = (iso) => { const d = new Date(iso); return `${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  assert.equal(local(nextRun(slots, 'today', at('07:00'))), '1 08:00', 'before the first slot');
+  assert.equal(local(nextRun(slots, 'failed', at('08:05'))), '1 08:20', 'a failed run is retried at the next slot today');
+  assert.equal(local(nextRun(slots, 'today', at('09:00'))), '1 09:30');
+  assert.equal(local(nextRun(slots, 'failed', at('10:00'))), '2 08:00', 'no slot left today');
+  assert.equal(local(nextRun(slots, 'sent', at('08:01'))), '2 08:00', 'the later slots only skip once it is sent');
+  assert.equal(local(nextRun(slots, 'unknown', at('08:01'))), '2 08:00', 'an unknown outcome is not resent automatically');
+  assert.equal(nextRun([], 'today', at('07:00')), null);
 });
