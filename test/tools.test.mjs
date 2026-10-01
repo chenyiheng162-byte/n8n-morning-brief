@@ -220,14 +220,25 @@ test('deploy: only the newest three database backups are kept', () => {
 });
 
 // ================= launchd: restore the old schedule when loading the new one fails =================
+test('launchd: a load that fails once is retried and the new schedule is kept', () => {
+  const fakeHome = tmpdir('ld-h-'); const home = tmpdir('ld-r-'); const stub = tmpdir('ld-s-'); const bin = tmpdir('ld-b-');
+  fs.writeFileSync(path.join(home, '.n8n-morning-brief-runtime'), ''); fs.mkdirSync(path.join(home, 'logs'));
+  const agents = path.join(fakeHome, 'Library', 'LaunchAgents'); fs.mkdirSync(agents, { recursive: true }); const plist = path.join(agents, 'test.retry.plist'); fs.writeFileSync(plist, 'OLD-PLIST-CONTENT');
+  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/bash\necho "$*" >> "${stub}/calls"\nif [ "$1" = bootstrap ] && [ ! -f "${stub}/failed-once" ]; then touch "${stub}/failed-once"; exit 1; fi\nexit 0\n`, { mode: 0o755 });
+  const r = spawnSync('bash', [path.join(ROOT, 'scripts', 'install-launchd.sh'), '08:00'], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, HOME: fakeHome, BRIEF_HOME: home, BRIEF_LABEL: 'test.retry' } });
+  assert.equal(r.status, 0, r.stderr); assert.notEqual(read(plist), 'OLD-PLIST-CONTENT', 'the new plist stays in place');
+  assert.equal(read(path.join(stub, 'calls')).split('\n').filter((l) => l.startsWith('bootstrap')).length, 2, 'one failure, one retry');
+  assert.deepEqual(fs.readdirSync(agents).filter((n) => n.includes('.prev.') || n.includes('.err')), [], 'no temp files left');
+});
+
 test('launchd: if loading the new schedule fails, the previous one is put back (review: rollback)', () => {
   const fakeHome = tmpdir('ld-h-'); const home = tmpdir('ld-r-'); const stub = tmpdir('ld-s-'); const bin = tmpdir('ld-b-');
   fs.writeFileSync(path.join(home, '.n8n-morning-brief-runtime'), ''); fs.mkdirSync(path.join(home, 'logs'));
   const agents = path.join(fakeHome, 'Library', 'LaunchAgents'); fs.mkdirSync(agents, { recursive: true }); const plist = path.join(agents, 'test.rollback.plist'); fs.writeFileSync(plist, 'OLD-PLIST-CONTENT');
-  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/bash\necho "$*" >> "${stub}/calls"\nif [ "$1" = bootstrap ] && [ ! -f "${stub}/failed-once" ]; then touch "${stub}/failed-once"; exit 1; fi\nexit 0\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/bash\necho "$*" >> "${stub}/calls"\nif [ "$1" = bootstrap ] && ! grep -q OLD-PLIST-CONTENT "$3"; then exit 1; fi\nexit 0\n`, { mode: 0o755 });
   const r = spawnSync('bash', [path.join(ROOT, 'scripts', 'install-launchd.sh'), '08:00'], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, HOME: fakeHome, BRIEF_HOME: home, BRIEF_LABEL: 'test.rollback' } });
   assert.notEqual(r.status, 0); assert.match(r.stderr, /previous schedule was restored/);
-  assert.equal(read(plist), 'OLD-PLIST-CONTENT'); assert.equal(read(path.join(stub, 'calls')).split('\n').filter((l) => l.startsWith('bootstrap')).length, 2, 'the old job was loaded again');
+  assert.equal(read(plist), 'OLD-PLIST-CONTENT'); assert.equal(read(path.join(stub, 'calls')).split('\n').filter((l) => l.startsWith('bootstrap')).length, 6, 'the new job was tried 5 times, then the old job was loaded again');
   assert.deepEqual(fs.readdirSync(agents).filter((n) => n.includes('.prev.') || n.includes('.plist.')), [], 'no temp files left');
 });
 test('launchd: if loading fails and there was no schedule before, no half-installed plist is left', () => {
