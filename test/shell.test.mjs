@@ -63,6 +63,14 @@ test('successful executions are not stored by n8n (they would keep your schedule
   assert.equal(r.stdout.trim(), 'none 600');
 });
 
+test('BRIEF_EXEC_KEEP_DAYS must be a whole number (it goes into an SQL statement): anything else is reported and replaced by 3', () => {
+  for (const [value, want, flagged] of [['7', '7', false], ['abc', '3', true], ['3 days', '3', true], ['', '3', false]]) {
+    const home = tmpdir('env-'); fs.writeFileSync(path.join(home, 'config.local.env'), value ? `BRIEF_EXEC_KEEP_DAYS='${value}'\n` : '');
+    const r = bash(`. "${ROOT}/scripts/env.sh"; echo "$BRIEF_EXEC_KEEP_DAYS|$BRIEF_CONFIG_ERRORS"`, { BRIEF_HOME: home });
+    assert.equal(r.stdout.trim(), `${want}|${flagged ? 'BRIEF_EXEC_KEEP_DAYS' : ''}`, value);
+  }
+});
+
 // ---------- folder guard ----------
 test('rsync --delete and --purge refuse a folder this project did not create (review I)', () => {
   const home = tmpdir('guard-'); // no marker file
