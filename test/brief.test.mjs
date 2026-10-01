@@ -264,3 +264,26 @@ test('each task line says which course or project it belongs to (four courses ca
   assert.match(t, /\*\*No course\*\* · 周六\n/, 'no empty label');
   assert.match(t, /Thing\*\* · 周日 · _A very long pro…_/);
 });
+
+test('a line break typed into a task cell (Excel Alt-Enter) cannot break the task line or start a heading, in either view', async () => {
+  const f = csv('进行中,"Law\nSchool","Essay\n# Big heading",2026-10-01,"2\nh",a.txt,2026-09-01,', '待确认,Law,"Read\n- chapter 3",2026-10-20,,a.txt,2026-09-01,', '进行中,Law,"Later\n> quote",2026-10-15,,a.txt,2026-09-01,');
+  for (const view of ['compact', 'full']) {
+    const t = text(await brief({ ...cal(), tasksFile: f }, { BRIEF_VIEW: view }));
+    assert.doesNotMatch(t, /\n# |\n- chapter|\n> quote|\nSchool|\nh\b/, view);
+    assert.match(t, /Essay # Big heading/, view);
+  }
+});
+
+test('the full view prints no empty course label for a task without one', async () => {
+  const f = csv('进行中,,No course,2026-10-01,,a.txt,2026-09-01,', '进行中,,Later,2026-10-20,,a.txt,2026-09-01,');
+  const t = text(await brief({ ...cal(), tasksFile: f }, { BRIEF_VIEW: 'full' }));
+  assert.doesNotMatch(t, /__/); assert.match(t, /\*\*No course\*\* · 明天截止 · 还剩 1 天\n|\*\*No course\*\* · 10-01 周四 · 还剩 1 天\n/);
+});
+
+test('a long BRIEF_NOTE is shortened with … and never ends in half an escape', async () => {
+  for (let n = 230; n < 240; n++) {
+    const t = text(await brief({ ...cal() }, { BRIEF_NOTE: `${'x'.repeat(n)}*tail*` }));
+    const line = t.split('\n').find((l) => l.startsWith('ℹ️ x'));
+    assert.ok(line.length <= 240, `${n}: ${line.length}`); assert.ok(line.endsWith('…'), String(n)); assert.doesNotMatch(line, /\\…$/, String(n));
+  }
+});
