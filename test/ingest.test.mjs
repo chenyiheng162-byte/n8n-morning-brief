@@ -472,3 +472,21 @@ test('progress written by earlier versions (a position without a version mark) i
   const t3 = []; await runNode('ingest-files.js', { env, nodes, http: slowAi(t3, 0) });
   assert.ok(!t3.join('').startsWith(t2.join('').slice(0, 200)) || !t2.length, 'version-2 progress is continued, not restarted'); assert.ok(st.offset[h2] > 0 || st.done[h2]);
 });
+
+test('extract-inbox: the text of a document that left the inbox is deleted once it is a week old; files still there and recent ones are kept', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { ROOT } = await import('./helpers.mjs');
+  const home = tmpdir('ex-home-'); const { inbox, state } = setup({ 'kept.pdf': 'pdf bytes' });
+  const dir = path.join(state, 'extracted'); fs.mkdirSync(dir, { recursive: true });
+  const h = (s) => crypto.createHash('sha256').update(s).digest('hex');
+  const f = { present: `${h('pdf bytes')}.txt`, goneOld: `${h('gone')}.txt`, goneOldErr: `${h('gone too')}.err`, goneRecent: `${h('recent')}.txt`, notOurs: 'notes.txt' };
+  for (const n of Object.values(f)) fs.writeFileSync(path.join(dir, n), 'x');
+  const eightDaysAgo = new Date(Date.now() - 8 * 86400000);
+  for (const k of ['present', 'goneOld', 'goneOldErr', 'notOurs']) fs.utimesSync(path.join(dir, f[k]), eightDaysAgo, eightDaysAgo);
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'extract-inbox.mjs')], { env: { ...process.env, BRIEF_HOME: home, BRIEF_INBOX: inbox, BRIEF_STATE_DIR: state }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /2 old cache file\(s\) of removed documents deleted/);
+  const left = new Set(fs.readdirSync(dir));
+  assert.ok(left.has(f.present), 'the file is still in the inbox'); assert.ok(left.has(f.goneRecent), 'taken out only recently');
+  assert.ok(left.has(f.notOurs), 'only cache files are touched');
+  assert.ok(!left.has(f.goneOld) && !left.has(f.goneOldErr), 'the old text of a removed document is gone');
+});
