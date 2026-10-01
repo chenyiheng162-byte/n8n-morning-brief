@@ -82,8 +82,16 @@ if [ -x "$BRIEF_HOME/node_modules/.bin/n8n" ] && cmp -s "$SRC_DIR/package-lock.j
 else
   say "安装 n8n 和依赖（几分钟，约 3 GB，请保持联网）"
   cp "$SRC_DIR/package.json" "$SRC_DIR/package-lock.json" "$BRIEF_HOME/"
+  # The copied lock file is what marks the libraries as installed (the check above), so it must not outlive a failed or
+  # interrupted install: the next run would skip a half-finished node_modules whose n8n link already exists.
+  trap 'rm -f "$BRIEF_HOME/package-lock.json"' EXIT
   # SCARF_ANALYTICS=false: one of n8n's dependencies would otherwise report install statistics.
-  (cd "$BRIEF_HOME" && SCARF_ANALYTICS=false npm ci --no-audit --no-fund 2>&1 | grep -vE 'install-scripts|npm warn' | tail -3) || true
+  if ! (cd "$BRIEF_HOME" && SCARF_ANALYTICS=false npm ci --no-audit --no-fund > "$BRIEF_HOME/logs/npm-install.log" 2>&1); then
+    grep -vE 'install-scripts|npm warn' "$BRIEF_HOME/logs/npm-install.log" | tail -8 >&2 || true
+    echo "安装 n8n 失败（完整输出在 ${BRIEF_HOME}/logs/npm-install.log）。修好网络后重新运行 install.sh 即可，会从头重装依赖。" >&2; exit 1
+  fi
+  trap - EXIT
+  grep -vE 'install-scripts|npm warn' "$BRIEF_HOME/logs/npm-install.log" | tail -3 || true
 fi
 [ -x "$BRIEF_HOME/node_modules/.bin/n8n" ] || { echo "n8n 没有装好，请看上面的输出；修好网络后重新运行 install.sh 即可。" >&2; exit 1; }
 . "$SRC_DIR/scripts/env.sh"

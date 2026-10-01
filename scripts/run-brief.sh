@@ -60,13 +60,15 @@ alert() {
   [ "$n" -lt 2 ] || return 0
   echo $((n + 1)) > "$STATE_DIR/alerts-$TODAY"
   local code
+  # (an alert can quote a file name or a server's answer: allowed_mentions keeps an "@everyone" in it from pinging anyone)
   code="$(printf 'url = "%s"\n' "$DISCORD_WEBHOOK_URL" | curl -s -o /dev/null -m 15 -w '%{http_code}' -K - \
     -H 'Content-Type: application/json' -X POST \
-    --data "$(printf '{"content":"⚠️ 每日简报：%s"}' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')")" 2>/dev/null)" || true
+    --data "$(printf '{"content":"⚠️ 每日简报：%s","allowed_mentions":{"parse":[]}}' "$(json_escape "$1")")" 2>/dev/null)" || true
   case "$code" in 2??) ;; *) log "alert to Discord failed (HTTP ${code:-none})"; notify_local "Discord 报警也没有发出去，请检查 Webhook 是否还有效" ;; esac
 }
 
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n\r' '  '; }
+# A JSON string body: line breaks and tabs become spaces, other control characters (invalid in JSON) are dropped.
+json_escape() { printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 num_of() { printf '%s' "$BODY" | sed -n "s/.*\"$1\":\([0-9][0-9]*\).*/\1/p" | head -1; }
 # One small machine-readable record of the latest run, for scripts/status.sh.
 write_last_run() {
@@ -90,6 +92,16 @@ stop_n8n() {
   [ "$STARTED_BY_US" = 1 ] && rm -f "$N8N_PIDFILE"
   STARTED_BY_US=0
 }
+# Old day markers and logs go after every successful delivery, whichever engine sent it (called from cleanup, so the
+# direct engine and the fallback, which end the script early, are covered too).
+tidy_files() {
+  find "$STATE_DIR" \( -name 'sent-*' -o -name 'reported-*' -o -name 'alerts-*' -o -name 'pending-*' -o -name 'attempt-*' \) -mtime +14 -delete 2>/dev/null
+  find "$LOG_DIR" -name 'run-*.log' -mtime +30 -delete 2>/dev/null
+  if [ -f "$LOG_DIR/n8n-run.log" ] && [ "$(wc -c < "$LOG_DIR/n8n-run.log")" -gt 5242880 ]; then
+    tail -c 1048576 "$LOG_DIR/n8n-run.log" > "$LOG_DIR/n8n-run.log.tmp" && mv "$LOG_DIR/n8n-run.log.tmp" "$LOG_DIR/n8n-run.log"
+  fi
+  return 0
+}
 cleanup() {
   local rc=$?
   # a request that is still in flight must not outlive us
@@ -102,6 +114,7 @@ cleanup() {
     esac
   fi
   stop_n8n
+  [ "$RESULT" = ok ] && tidy_files
   write_last_run
   # release the lock only if it is still ours (another process may have taken over a lock it considered stale)
   [ "$HAVE_LOCK" = 1 ] && lock_release
@@ -364,9 +377,4 @@ elif [ -f "$DB" ] && command -v sqlite3 >/dev/null 2>&1; then
   # n8n is stopped and it was ours, so nothing can still be running: those rows go at once. Failed ones stay a few days.
   sqlite3 "$DB" "PRAGMA foreign_keys=ON; delete from execution_entity where status in ('success','running','new') or startedAt < datetime('now','-${BRIEF_EXEC_KEEP_DAYS:-3} days') or (status='running' and startedAt < datetime('now','-1 hour'));" >/dev/null 2>&1 || log "WARN: could not prune old n8n executions"
 fi
-find "$STATE_DIR" \( -name 'sent-*' -o -name 'reported-*' -o -name 'alerts-*' -o -name 'pending-*' -o -name 'attempt-*' \) -mtime +14 -delete 2>/dev/null
-find "$LOG_DIR" -name 'run-*.log' -mtime +30 -delete 2>/dev/null
-if [ -f "$LOG_DIR/n8n-run.log" ] && [ "$(wc -c < "$LOG_DIR/n8n-run.log")" -gt 5242880 ]; then
-  tail -c 1048576 "$LOG_DIR/n8n-run.log" > "$LOG_DIR/n8n-run.log.tmp" && mv "$LOG_DIR/n8n-run.log.tmp" "$LOG_DIR/n8n-run.log"
-fi
-exit 0
+exit 0   # (old markers and logs are tidied by cleanup)

@@ -61,6 +61,8 @@ export BRIEF_TZ TZ="$BRIEF_TZ" GENERIC_TIMEZONE="$BRIEF_TZ" BRIEF_TZ_INVALID="${
 # n8n lives for seconds, so its built-in pruning timers never fire: do not keep successful executions at all
 # (they would hold your schedule forever). Failed ones are kept for troubleshooting and pruned by run-brief.sh.
 export EXECUTIONS_DATA_SAVE_ON_SUCCESS="${EXECUTIONS_DATA_SAVE_ON_SUCCESS:-none}"
-export BRIEF_EXEC_KEEP_DAYS="${BRIEF_EXEC_KEEP_DAYS:-3}"
+# (a whole number of days: run-brief.sh puts it into an SQL statement, so anything else falls back to 3 and is reported)
+case "${BRIEF_EXEC_KEEP_DAYS:-}" in ''|*[!0-9]*) [ -z "${BRIEF_EXEC_KEEP_DAYS:-}" ] || BRIEF_CONFIG_ERRORS="${BRIEF_CONFIG_ERRORS:+$BRIEF_CONFIG_ERRORS,}BRIEF_EXEC_KEEP_DAYS"; BRIEF_EXEC_KEEP_DAYS=3 ;; esac
+export BRIEF_EXEC_KEEP_DAYS BRIEF_CONFIG_ERRORS
 # The ingest step may run several AI calls; keep n8n's own Code-node timeout above our budget.
 export N8N_RUNNERS_TASK_TIMEOUT="${N8N_RUNNERS_TASK_TIMEOUT:-600}"

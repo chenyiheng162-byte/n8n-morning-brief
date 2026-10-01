@@ -13,6 +13,10 @@ main() {
   if [ -e "$dest" ] && [ ! -f "$dest/install.sh" ]; then
     echo "${dest} 已经存在，但不是这个项目的文件夹。请先把它改名或移走，再运行一次。" >&2; exit 1
   fi
+  # a git checkout there is someone's working copy (with history and unpublished changes): it is never replaced
+  if [ -e "$dest/.git" ]; then
+    echo "${dest} 是一个 git 仓库（可能是你自己的开发副本），不会覆盖它。请在那里用 git 更新，或者先把它改名或移走，再运行一次。" >&2; exit 1
+  fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/brief-get.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   echo "正在下载每日简报……"

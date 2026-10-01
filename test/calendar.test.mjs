@@ -120,7 +120,8 @@ test('an exception written in UTC for a series written with a TZID does not show
 });
 
 test('invalid settings never crash the calendar: they fall back and are reported (review H1)', async () => {
-  const text = ics(vevent({ uid: 'a', lines: ['SUMMARY:X', 'DTSTART:20260930T010000Z', 'DTEND:20260930T020000Z'] }));
+  // (12:00 UTC is on 09-30 in every zone from UTC-11 to UTC+11: the fallback for a bad BRIEF_TZ is the zone of the machine running the test)
+  const text = ics(vevent({ uid: 'a', lines: ['SUMMARY:X', 'DTSTART:20260930T120000Z', 'DTEND:20260930T130000Z'] }));
   for (const [bad, expectedWarning] of [[{ BRIEF_TZ: 'Mars/Base' }, /BRIEF_TZ/], [{ BRIEF_EVENT_DAYS: 'abc' }, /BRIEF_EVENT_DAYS/], [{ BRIEF_EVENT_DAYS: '-2' }, /BRIEF_EVENT_DAYS/], [{ BRIEF_EVENT_DAYS: '400' }, /BRIEF_EVENT_DAYS/]]) {
     const r = await run(text, bad);
     assert.equal(r.events.length, 1); assert.match(r.warnings.join('|'), expectedWarning);
@@ -211,6 +212,7 @@ for (const z of ['with', 'without']) {
 }
 test('a zone name that is not an IANA name is reported instead of guessed (review F5)', () => {
   const r = probe('windows', 'without'); assert.equal(r.failed, 0); assert.match(r.warnings.join(), /无法识别的时区/); assert.match(r.warnings.join(), /Beijing/);
+  assert.match(r.warnings.join(), /按 Asia\/Hong_Kong 显示/); assert.deepEqual(r.events, ['2026-09-30 09:00 Odd zone'], 'read as a wall time in BRIEF_TZ, whatever zone the machine is in');
 });
 
 // ================= final review =================
@@ -237,4 +239,20 @@ test('the text "TZID=" inside a description is not taken for a time zone (review
 
 test('time properties written in lower case still get their time zone (review R6-06)', () => {
   assert.deepEqual(probe('lower', 'without').events, ['2026-10-01 16:00 London class']);
+});
+
+test('a time without a zone (floating) is that wall-clock time in BRIEF_TZ, whatever zone the process runs in', async () => {
+  // two zones: at most one of them can be the zone of the machine running the test, so the other one checks the rule
+  for (const tz of ['Asia/Hong_Kong', 'America/New_York']) {
+    const r = await run(ics(vevent({ uid: 'fl', lines: ['SUMMARY:Floating', 'DTSTART:20261001T090000', 'DTEND:20261001T100000', 'RRULE:FREQ=DAILY;COUNT=5'] })), { BRIEF_TZ: tz });
+    assert.deepEqual(r.events.map((e) => `${e.day} ${e.startHM}-${e.endHM}`).slice(0, 2), ['2026-10-01 09:00-10:00', '2026-10-02 09:00-10:00'], tz);
+  }
+});
+
+test('a series too long to follow up to today is reported instead of silently missing; one that ended long ago is not', async () => {
+  const r = await run(ics(vevent({ uid: 'old', lines: ['SUMMARY:Daily *standup*', 'DTSTART:19600101T010000Z', 'DTEND:19600101T013000Z', 'RRULE:FREQ=DAILY'] })));
+  assert.equal(r.errors.length, 0);
+  assert.ok(r.warnings.some((w) => /1 个重复日程开始得太早/.test(w) && w.includes('Daily  standup')), JSON.stringify(r.warnings));
+  const ended = await run(ics(vevent({ uid: 'end', lines: ['SUMMARY:Old hourly', 'DTSTART:20100101T000000Z', 'DTEND:20100101T001000Z', 'RRULE:FREQ=HOURLY;UNTIL=20150101T000000Z'] })));
+  assert.deepEqual(ended.warnings, []); assert.deepEqual(ended.events, []);
 });

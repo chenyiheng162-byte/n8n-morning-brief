@@ -24,7 +24,11 @@ else
 fi
 nv="$(n8n --version 2>/dev/null | tail -1)"; exp="$(node -e "try{console.log(require(process.argv[1]).dependencies.n8n)}catch(e){}" "$BRIEF_HOME/package.json" 2>/dev/null)"
 [ -n "$nv" ] && { [ "$nv" = "$exp" ] && ok "n8n ${nv}（和测试过的版本一致）" || warn "n8n 是 ${nv}，测试过的是 ${exp}（部署脚本会拒绝修改内部表）"; } || warn "找不到 n8n"
-[ -n "${BRIEF_CONFIG_ERRORS:-}" ] && warn "config.local.env 里有看不懂的行：第 ${BRIEF_CONFIG_ERRORS} 行（已跳过；格式应为 KEY='值'）"
+# (BRIEF_CONFIG_ERRORS lists line numbers of lines that were skipped, and names of settings whose value was invalid)
+cfg_lines="$(printf '%s' "${BRIEF_CONFIG_ERRORS:-}" | tr ',' '\n' | grep -E '^[0-9]+$' | paste -s -d , -)"
+cfg_names="$(printf '%s' "${BRIEF_CONFIG_ERRORS:-}" | tr ',' '\n' | grep -vE '^[0-9]+$' | grep . | paste -s -d , -)"
+[ -n "$cfg_lines" ] && warn "config.local.env 里有看不懂的行：第 ${cfg_lines} 行（已跳过；格式应为 KEY='值'）"
+[ -n "$cfg_names" ] && warn "这些设置的值无效，已改用默认值：${cfg_names}"
 [ -n "${BRIEF_TZ_INVALID:-}" ] && warn "BRIEF_TZ「${BRIEF_TZ_INVALID}」不是有效时区，正在使用 ${BRIEF_TZ}"
 keys="$(sed -n "s/^\(export \)\{0,1\}\([A-Z_][A-Z0-9_]*\)=.*/\2/p" "$BRIEF_HOME/config.local.env" 2>/dev/null | tr '\n' ' ')"
 info "设置项（只列名字）：${keys:-（无）}"
@@ -51,7 +55,7 @@ if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
   info "每天 ${slots:-?}（后面几个是重试时间点，成功后会自动跳过）"
 else warn "定时任务没有加载：运行 ./scripts/install-launchd.sh"; fi
 systz="$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##')"
-[ -n "$systz" ] && [ "$systz" != "$BRIEF_TZ" ] && warn "定时任务按系统时区（${systz}）触发，而简报里的"今天"按 BRIEF_TZ（${BRIEF_TZ}）：两者不同时，简报可能属于另一天"
+[ -n "$systz" ] && [ "$systz" != "$BRIEF_TZ" ] && warn "定时任务按系统时区（${systz}）触发，而简报里的「今天」按 BRIEF_TZ（${BRIEF_TZ}）：两者不同时，简报可能属于另一天"
 wake="$(pmset -g sched 2>/dev/null | grep -iE 'wake|poweron' | head -2 | tr -s ' ' | tr '\n' ';')"
 [ -n "$wake" ] && ok "唤醒计划：$wake" || info "没有设置定时唤醒：Mac 睡着时，简报要等你唤醒电脑后才补发"
 echo
@@ -90,7 +94,7 @@ info "运行目录总大小 $(du -sh "$BRIEF_HOME" 2>/dev/null | cut -f1)"
 if [ "${1:-}" = "--check-net" ]; then
   echo; echo "网络（--check-net）"
   curl -s -o /dev/null -m 8 https://discord.com && ok "能连上 discord.com" || warn "连不上 discord.com"
-  if [ -n "${AI_BASE_URL:-}" ]; then curl -s -o /dev/null -m 8 "$AI_BASE_URL" && ok "能连上 AI 服务（${AI_BASE_URL%%/*//}）" || warn "连不上 AI 服务"; fi
+  if [ -n "${AI_BASE_URL:-}" ]; then ai_host="${AI_BASE_URL#*://}"; ai_host="${ai_host%%/*}"; curl -s -o /dev/null -m 8 "$AI_BASE_URL" && ok "能连上 AI 服务（${ai_host}）" || warn "连不上 AI 服务（${ai_host}）"; fi
 fi
 echo
 if [ "$PROBLEMS" = 0 ]; then echo "一切正常。"; exit 0; else echo "有 $PROBLEMS 项需要留意（上面带 ⚠️ 的）。"; exit 1; fi

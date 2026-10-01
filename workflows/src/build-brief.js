@@ -26,6 +26,9 @@ const short = (d) => `${d.slice(5)} ${weekday(d)}`;
 let tasks = [];
 let tableError = false;
 try { if (input.tasksFile) tasks = readTasks(input.tasksFile, fs); } catch (e) { tableError = true; errors.push(`任务表读取失败：${scrub(e.message).slice(0, 200)}`); }
+// A cell edited in Excel can hold a line break (Alt-Enter): in a title it would end the task line and could start a markdown
+// heading or list on the next one. Every text that is printed is made one line here, once, for both views.
+tasks = tasks.map((t) => ({ ...t, '任务': oneLine(t['任务'] || ''), '分类': oneLine(t['分类'] || ''), '预估耗时': oneLine(t['预估耗时'] || '') }));
 const kind = (t) => statusKind(t['状态']);
 const active = tasks.filter((t) => kind(t) === 'active');
 const pendingTasks = tasks.filter((t) => kind(t) === 'pending');
@@ -38,7 +41,7 @@ const noDueNote = noDue ? `📌 ${noDue} 项进行中的任务没有可用的截
 const dot = (left) => (left < 0 ? '🔴' : left <= 3 ? '🟠' : left <= 7 ? '🟡' : '🟢');
 const taskLine = ({ t, due, left }) => {
   const when = left < 0 ? `逾期 ${-left} 天` : left === 0 ? '今天截止' : `${short(due)} · 还剩 ${left} 天`;
-  return `${dot(left)} **${esc(t['任务'])}** · ${when}${t['预估耗时'] ? ` · 约 ${esc(t['预估耗时'])}` : ''} · _${esc(t['分类'])}_`;
+  return `${dot(left)} **${esc(t['任务'])}** · ${when}${t['预估耗时'] ? ` · 约 ${esc(t['预估耗时'])}` : ''}${t['分类'] ? ` · _${esc(t['分类'])}_` : ''}`;
 };
 // Old tasks nobody marked as done must not push tomorrow's deadline off the page: overdue items are capped (the most
 // recent ones, which can still be saved, come first) and the rest is summarised with a hint how to clean them up.
@@ -95,7 +98,7 @@ const notes = () => {
   if (unknownStatus) n.push(`❓ ${unknownStatus} 项任务的状态看不懂（应为 待确认 / 进行中 / 完成 / 忽略）`);
   if (cachedNote) n.push(cachedNote);
   if (missed.length) n.push(`ℹ️ ${missed.map((d) => d.slice(5)).join('、')} 漏发，今天补上`);
-  if ($env.BRIEF_NOTE) n.push(`ℹ️ ${esc(oneLine(scrub($env.BRIEF_NOTE))).slice(0, 240)}`); // e.g. "sent by the direct engine because n8n was unavailable"
+  if ($env.BRIEF_NOTE) n.push(cutText(`ℹ️ ${esc(oneLine(scrub($env.BRIEF_NOTE)))}`, 240)); // e.g. "sent by the direct engine because n8n was unavailable"
   if (!calendars) n.push('ℹ️ 未配置日历');
   if (warnings.length) n.push(cutText(`⚙️ 设置提示：${warnings.join('；')}`, 500));
   // Problems are always reported, but summarised: the first three (shortened) and how many more there are.
