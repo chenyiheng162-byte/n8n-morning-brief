@@ -24,11 +24,12 @@ BRIEF_CONFIG_ERRORS=""
 if [ -f "$BRIEF_HOME/config.local.env" ]; then
   _re_single="^([A-Za-z_][A-Za-z0-9_]*)='([^']*)'\$"
   _re_double='^([A-Za-z_][A-Za-z0-9_]*)="(([^"$`\\]|\\[^"$`\\])*)"$'
-  _re_bare='^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@%+,=?-]*)$'
+  _re_bare='^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@%+,=?&-]*)$'
   _n=0
   while IFS= read -r _line || [ -n "$_line" ]; do
     _n=$((_n + 1)); _line="${_line%$'\r'}"; _line="${_line#export }"
     case "$_line" in ''|'#'*|[[:space:]]*'#'*) continue ;; esac
+    [ -n "${_line//[[:space:]]/}" ] || continue   # a line of only spaces is blank, not an error
     if   [[ $_line =~ $_re_single ]]; then _k="${BASH_REMATCH[1]}"; _v="${BASH_REMATCH[2]}"
     elif [[ $_line =~ $_re_double ]]; then _k="${BASH_REMATCH[1]}"; _v="${BASH_REMATCH[2]}"
     elif [[ $_line =~ $_re_bare ]];   then _k="${BASH_REMATCH[1]}"; _v="${BASH_REMATCH[2]}"

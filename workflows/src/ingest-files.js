@@ -134,6 +134,7 @@ Rules:
 - If there are no tasks, return {"tasks":[]}.`;
 
 let knownCourses = [];
+let priorTasks = {}; // filename -> rows already in the table from an earlier version of that file
 const isTimeout = (e) => /timeout|timed out|ETIMEDOUT|ESOCKETTIMEDOUT/i.test(String((e && e.message) || ''));
 const httpCode = (e) => Number((e && (e.httpCode ?? e.statusCode ?? (e.response && e.response.status))) || ((String((e && e.message) || '').match(/\b([45]\d\d)\b/) || [])[1])) || 0;
 const retryable = (e) => { const c = httpCode(e); return c === 429 || c >= 500 || /ECONNRESET|socket hang up|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|network/i.test(String((e && e.message) || '')); };
@@ -150,7 +151,9 @@ function extractJson(raw) {
 // canSplit: a request that times out on a long piece is reported as tooSlow, and the caller reads that piece in two halves.
 async function askAI(name, text, part, parts, canSplit = true) {
   const known = knownCourses.length ? `\nKnown course names (reuse the exact spelling when the document is about the same course): ${knownCourses.join('; ')}` : '';
-  const user = `Today: ${today}\nFilename: ${name}${parts > 1 ? `\nPart ${part} of ${parts}` : ''}${known}\n\n${text}`;
+  const prior = (priorTasks[name] || []).slice(0, 60);
+  const already = prior.length ? `\nThis is a NEW VERSION of a document that was read before. These tasks are already recorded from it (title | due): ${prior.map((t) => `${t['任务']} | ${t['截止日'] || '?'}`).join('; ')}. List only tasks that are missing from that list or whose date changed; do not repeat the others.` : '';
+  const user = `Today: ${today}\nFilename: ${name}${parts > 1 ? `\nPart ${part} of ${parts}` : ''}${known}${already}\n\n${text}`;
   const headers = { 'Content-Type': 'application/json' };
   if ($env.AI_API_KEY) headers.Authorization = `Bearer ${$env.AI_API_KEY}`;
   const post = (jsonMode) => this.helpers.httpRequest({
@@ -211,7 +214,8 @@ for (const n of names) {
   const ex = extractionState(ext, hash);
   if (ex.gaveUp !== undefined) { if (!seen.gaveUp[hash]) { errors.push(`${n} 无法提取文字（已尝试 ${MAX_EXTRACT_ATTEMPTS} 次）：${safe(ex.gaveUp)}。请移走它，或重新导出为可复制文字的 PDF/DOCX`); seen.gaveUp[hash] = today; } stats.skipped++; continue; }
   if (ex.waiting) { errors.push(`${n}：${safe(ex.waiting)}`); stats.skipped++; continue; }
-  pending.push({ n, hash, size: fs.statSync(path.join(inbox, n)).size });
+  const reread = Object.entries(seen.done).some(([h, d]) => h !== hash && d && typeof d === 'object' && d.file === n && !d.ignored);
+  pending.push({ n, hash, size: fs.statSync(path.join(inbox, n)).size, reread });
 }
 for (const h of Object.keys(seen.partial)) if (!present.has(h)) { delete seen.partial[h]; delete seen.offset[h]; delete seen.chunkEnd[h]; } // the file changed or was removed
 for (const h of Object.keys(seen.truncated)) if (!present.has(h)) delete seen.truncated[h];
@@ -231,6 +235,12 @@ if (DRY && pending.length) {
     remaining = pending.length; // a damaged task table blocks ingestion: nothing is sent to the AI, nothing is rewritten
   } else {
     knownCourses = [...new Set(tasks.map((t) => t['分类']).filter(Boolean))].slice(0, 30);
+    priorTasks = {};
+    for (const p of pending) if (p.reread) priorTasks[p.n] = tasks.filter((t) => t['来源'] === p.n && statusKind(t['状态']) !== 'ignored');
+    // "Assignment 1" and "Assignment 1 submission (Python)" are the same thing said twice: one contains the other, or
+    // they share most of their words.
+    const words = (s) => new Set(norm(s).replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter(Boolean));
+    const similar = (a, b) => { const x = norm(a), y = norm(b); if (!x || !y) return false; if (x.includes(y) || y.includes(x)) return true; const wa = words(a), wb = words(b); let both = 0; for (const w of wa) if (wb.has(w)) both++; return both >= 2 && both * 2 >= Math.max(wa.size, wb.size); };
     // Same title + same due date is only a duplicate when the (normalised) course name is exactly the same too. Anything
     // less certain is KEPT and flagged in the note: a spare row can be ignored with one edit, a silently dropped task
     // is never noticed. (The AI does not always name a course the same way, so re-reading an edited file can flag rows.)
@@ -247,10 +257,13 @@ if (DRY && pending.length) {
       const k = keyOf(title, due);
       const same = index.get(k) || [];
       if (same.some((r) => norm(r['分类']) === norm(category))) return 0;
+      // a new version of the same file: a row that reads like one already taken from the old version is flagged, not doubled
+      const older = !same.length && priorTasks[source] ? priorTasks[source].filter((r) => similar(r['任务'], title) && (norm(r['分类']) === norm(category) || !due || normalizeDate(r['截止日']) === due)) : [];
       const hours = Number(raw.hours);
       // BRIEF_AUTO_CONFIRM (off by default): tasks whose date is explicit and that are not possible duplicates go straight to 进行中.
-      const status = S.autoConfirm && certain && !same.length ? '进行中' : '待确认';
-      const row = { '状态': status, '分类': category, '任务': title, '截止日': due, '预估耗时': hours > 0 && hours <= 200 ? `${hours}h` : '', '来源': source, '添加时间': today, '备注': same.length ? `${note ? `${note}；` : ''}可能与「${same[0]['来源']}」里的同名任务重复` : note };
+      const status = S.autoConfirm && certain && !same.length && !older.length ? '进行中' : '待确认';
+      const flag = same.length ? `可能与「${same[0]['来源']}」里的同名任务重复` : older.length ? `文件有新版本：可能是「${clip(older[0]['任务'], 60)}」的更新，旧的那条可改成「忽略」` : '';
+      const row = { '状态': status, '分类': category, '任务': title, '截止日': due, '预估耗时': hours > 0 && hours <= 200 ? `${hours}h` : '', '来源': source, '添加时间': today, '备注': flag ? `${note ? `${note}；` : ''}${flag}` : note };
       tasks.push(row);
       index.set(k, [...same, row]);
       return 1;

@@ -154,7 +154,7 @@ function expandCalendar(comp) {
   const exceptions = [];
   for (const v of comp.getAllSubcomponents('vevent')) {
     if (v.hasProperty('recurrence-id')) exceptions.push(v);
-    else masters.set(v.getFirstPropertyValue('uid'), new ICAL.Event(v));
+    else masters.set(v.getFirstPropertyValue('uid') || `nouid:${v.getFirstPropertyValue('summary') || ''}|${String(v.getFirstPropertyValue('dtstart') || '')}`, new ICAL.Event(v));
   }
   const overridden = new Set();
   const slack = new Map(); // uid -> how far EARLIER a "this and future" change can pull an instance (ms)

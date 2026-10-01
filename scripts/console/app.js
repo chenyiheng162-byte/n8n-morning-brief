@@ -30,7 +30,7 @@ function toast(msg, kind = 'ok') { const t = h('div', { class: `toast ${kind}` }
 function confirmBox(title, text, okLabel = '确定', danger = false) {
   return new Promise((resolve) => {
     const close = (v) => { bg.remove(); document.removeEventListener('keydown', key); resolve(v); };
-    const key = (e) => { if (e.key === 'Escape') close(false); if (e.key === 'Enter') close(true); };
+    const key = (e) => { if (e.key === 'Escape') close(false); };
     const ok = h('button', { class: `btn ${danger ? 'danger' : 'primary'}`, onclick: () => close(true) }, okLabel);
     const bg = h('div', { class: 'overlay', onclick: (e) => { if (e.target === bg) close(false); } }, h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true' }, h('h3', {}, title), h('p', {}, text), h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => close(false) }, '取消'), ok)));
     $('#modalHost').append(bg); document.addEventListener('keydown', key); setTimeout(() => ok.focus(), 0);
@@ -66,21 +66,31 @@ function renderNav() {
   $('#nav').replaceChildren(...Object.entries(groups).map(([g, items]) => h('div', { class: 'navgroup' }, h('span', {}, g), items)));
 }
 async function go(k) {
-  if (k === current) return render();
-  if (dirtyGuard && dirtyGuard() && !(await confirmBox('有没保存的修改', '离开这一页会丢掉还没保存的修改。', '离开', true))) return;
+  if (k === current) return refresh();
+  if (dirtyGuard && dirtyGuard() && !(await confirmBox('有没保存的修改', '离开这一页会丢掉还没保存的修改。', '离开', true))) { history.replaceState(null, '', `#${current}`); return; }
   dirtyGuard = null; current = k; history.replaceState(null, '', `#${k}`); renderNav(); render();
+}
+// Re-reading the current page from the server throws away edits just like leaving it does, so it asks the same question.
+async function refresh() {
+  if (dirtyGuard && dirtyGuard() && !(await confirmBox('有没保存的修改', '刷新会丢掉还没保存的修改。', '刷新', true))) return;
+  dirtyGuard = null; refreshOverview(); render();
 }
 window.addEventListener('hashchange', () => { const k = location.hash.slice(1); if (VIEWS[k] && k !== current) go(k); });
 window.addEventListener('beforeunload', (e) => { if (dirtyGuard && dirtyGuard()) { e.preventDefault(); e.returnValue = ''; } });
 const skeleton = () => h('div', { class: 'grid' }, h('div', { class: 'skel', style: 'height:150px' }), h('div', { class: 'grid g-kpi' }, [1, 2, 3, 4].map(() => h('div', { class: 'skel', style: 'height:92px' }))), h('div', { class: 'skel', style: 'height:260px' }));
+let renderSeq = 0; // bumped by every render(); a page compares it after its awaits to know whether it is still wanted
+const pageEl = () => $('#view').firstElementChild;
 async function render() {
+  const seq = ++renderSeq;
+  document.querySelectorAll('.tip').forEach((t) => t.remove());
   $('#title').textContent = VIEWS[current][0]; $('#subtitle').textContent = '';
-  const view = $('#view'); view.replaceChildren(skeleton());
-  view.style.animation = 'none'; void view.offsetWidth; view.style.animation = '';
+  // every render gets its own element: a page that finishes loading after the user moved on writes into a detached node
+  const host = $('#view'); const view = h('div', {}, skeleton()); host.replaceChildren(view);
+  host.style.animation = 'none'; void host.offsetWidth; host.style.animation = '';
   try { await ({ setup: viewSetup, overview: viewOverview, tasks: viewTasks, inbox: viewInbox, settings: viewSettings, logs: viewLogs, tools: viewTools })[current](view); }
-  catch (e) { view.replaceChildren(h('div', { class: 'card empty' }, h('div', { class: 'ico' }, icon('triangle-alert', 'lg')), '读取失败：', e.message)); }
+  catch (e) { if (seq === renderSeq) view.replaceChildren(h('div', { class: 'card empty' }, h('div', { class: 'ico' }, icon('triangle-alert', 'lg')), '读取失败：', e.message)); }
 }
-$('#refreshBtn').addEventListener('click', () => { refreshOverview(); render(); });
+$('#refreshBtn').addEventListener('click', refresh);
 
 // ---------------------------------------------------------------- health / shared data --------------------------------
 async function refreshOverview() {
@@ -96,7 +106,7 @@ async function refreshOverview() {
   } catch { const hb = $('#health'); hb.className = 'badge t-bad'; hb.replaceChildren(h('span', { class: 'dot' }), '控制台连不上'); }
   return OV;
 }
-setInterval(() => { if (document.hidden) return; refreshOverview().then(() => { if (current === 'overview') viewOverview($('#view'), true); }); }, 30000);
+setInterval(() => { if (document.hidden) return; refreshOverview().then(() => { if (current === 'overview' && pageEl()) viewOverview(pageEl(), true); }); }, 30000);
 
 // ---------------------------------------------------------------- view: overview ---------------------------------------
 const STATE_TEXT = { sent: '已送达', unknown: '结果不明', failed: '失败', missed: '没发出', none: '安装前', today: '等待中' };
@@ -152,6 +162,7 @@ function deliveryChart(history, slot, width) {
   });
   return svgEl;
 }
+let healthExpanded = false;
 async function viewOverview(view, quiet = false) {
   const o = quiet && OV ? OV : await refreshOverview();
   if (!o) throw new Error('读不到状态');
@@ -178,9 +189,9 @@ async function viewOverview(view, quiet = false) {
   const okN = o.checks.filter((c) => c.level !== 'warn').length;
   const toneOf = { ok: ['t-ok', 'check'], warn: ['t-warn', 'triangle-alert'], info: ['t-info', 'circle-help'] };
   const sorted = [...o.checks].sort((a, b) => ({ warn: 0, info: 1, ok: 2 }[a.level] - { warn: 0, info: 1, ok: 2 }[b.level]));
-  let expanded = false; const list = h('ul', { class: 'checks' });
-  const drawChecks = () => { const show = expanded ? sorted : sorted.slice(0, 5); list.replaceChildren(...show.map((c) => h('li', {}, h('span', { class: `ci ${toneOf[c.level][0]}` }, icon(toneOf[c.level][1])), h('span', {}, c.text), c.fix ? h('span', { class: 'fix' }, c.fix) : ''))); more.classList.toggle('hidden', sorted.length <= 5); more.textContent = expanded ? '收起' : `显示全部 ${sorted.length} 项`; };
-  const more = h('button', { class: 'btn ghost sm', onclick: () => { expanded = !expanded; drawChecks(); } });
+  const list = h('ul', { class: 'checks' });
+  const drawChecks = () => { const expanded = healthExpanded; const show = expanded ? sorted : sorted.slice(0, 5); list.replaceChildren(...show.map((c) => h('li', {}, h('span', { class: `ci ${toneOf[c.level][0]}` }, icon(toneOf[c.level][1])), h('span', {}, c.text), c.fix ? h('span', { class: 'fix' }, c.fix) : ''))); more.classList.toggle('hidden', sorted.length <= 5); more.textContent = expanded ? '收起' : `显示全部 ${sorted.length} 项`; };
+  const more = h('button', { class: 'btn ghost sm', onclick: () => { healthExpanded = !healthExpanded; drawChecks(); } });
   const health = h('div', { class: 'card' }, h('div', { class: 'hd' }, h('h2', {}, '健康检查'), h('span', { class: 'spacer' }), more),
     h('div', { class: 'bd' }, h('div', { class: 'ringwrap', style: 'margin-bottom:10px' }, healthRing(okN, o.checks.length), h('div', {}, h('div', { style: 'font-weight:600' }, okN === o.checks.length ? '全部正常' : `${o.checks.length - okN} 项需要注意`), h('div', { class: 'muted small' }, '运行目录、版本、定时、唤醒、设置'))), list));
   drawChecks();
@@ -327,26 +338,31 @@ async function viewSetup(view) {
     const key = h('input', { type: 'password', autocomplete: 'off', placeholder: fk.set ? '已保存密钥。留空就继续用它' : '粘贴 API 密钥（本机模型可以留空）' });
     const help = h('p', { class: 'small muted' }, preset.help);
     const modelSel = h('select', { class: 'hidden', 'aria-label': '模型' }); const modelLabel = h('label', { class: 'hidden' }, '模型'); let models = [];
+    // when the provider has no model list, the model is typed in; the box appears only then
+    const modelIn = h('input', { type: 'text', class: 'hidden', spellcheck: false, placeholder: '模型名，例如 deepseek-chat', value: fm.value || '' }); let manual = false;
+    const showManual = (on) => { manual = on; modelIn.classList.toggle('hidden', !on); modelLabel.classList.toggle('hidden', !on && !models.length); if (on) { modelSel.classList.add('hidden'); go1.textContent = '保存并继续'; setTimeout(() => modelIn.focus(), 0); } };
     const seg = h('div', { class: 'seg' });
     const drawSeg = () => seg.replaceChildren(...AI_PRESETS.map((p) => h('button', { class: p === preset ? 'on' : '', onclick: () => { preset = p; if (p.base) base.value = p.base; help.textContent = p.help; modelSel.classList.add('hidden'); modelLabel.classList.add('hidden'); models = []; out.replaceChildren(); drawSeg(); go1.textContent = '获取模型列表'; } }, p.label)));
     const go1 = h('button', { class: 'btn sun', onclick: async () => {
-      if (models.length) {
-        busy(go1, true, '保存中…'); try { await save({ AI_BASE_URL: base.value.trim(), AI_MODEL: modelSel.value, ...(key.value.trim() ? { AI_API_KEY: key.value.trim() } : {}) }); key.value = ''; out.replaceChildren(msg(true, `已保存：${modelSel.value}`)); setTimeout(next, 800); }
+      if (models.length || manual) {
+        const model = manual ? modelIn.value.trim() : modelSel.value;
+        if (!model) { modelIn.focus(); return out.replaceChildren(msg(false, '请填写模型名。')); }
+        busy(go1, true, '保存中…'); try { await save({ AI_BASE_URL: base.value.trim(), AI_MODEL: model, ...(key.value.trim() ? { AI_API_KEY: key.value.trim() } : {}) }); key.value = ''; out.replaceChildren(msg(true, `已保存：${model}`)); setTimeout(next, 800); }
         catch (e) { out.replaceChildren(msg(false, e.data?.fieldErrors ? Object.values(e.data.fieldErrors).join('；') : e.message)); } finally { busy(go1, false); go1.textContent = '保存并继续'; }
         return;
       }
       busy(go1, true, '正在连接…'); try {
         const r = await api('/api/setup/models', { method: 'POST', body: { base: base.value, key: key.value, useSaved: !key.value.trim() && fk.set } });
-        if (!r.ok) { out.replaceChildren(msg(false, r.message)); return; }
-        models = r.models; modelSel.replaceChildren(...models.map((m) => h('option', { value: m, selected: m === (fm.value && models.includes(fm.value) ? fm.value : r.suggested) }, m))); modelSel.classList.remove('hidden'); modelLabel.classList.remove('hidden');
+        if (!r.ok) { out.replaceChildren(msg(false, r.message)); if (r.manual) showManual(true); return; }
+        showManual(false); models = r.models; modelSel.replaceChildren(...models.map((m) => h('option', { value: m, selected: m === (fm.value && models.includes(fm.value) ? fm.value : r.suggested) }, m))); modelSel.classList.remove('hidden'); modelLabel.classList.remove('hidden');
         out.replaceChildren(msg(true, `连上了，找到 ${models.length} 个模型。已选好推荐的那个，确认后点「保存并继续」。`));
       } catch (e) { out.replaceChildren(msg(false, e.message)); } finally { busy(go1, false); go1.textContent = models.length ? '保存并继续' : '获取模型列表'; }
     } }, '获取模型列表');
-    for (const el of [base, key]) el.addEventListener('input', () => { models = []; modelSel.classList.add('hidden'); modelLabel.classList.add('hidden'); go1.textContent = '获取模型列表'; });
+    for (const el of [base, key]) el.addEventListener('input', () => { models = []; modelSel.classList.add('hidden'); modelLabel.classList.add('hidden'); if (manual) showManual(false); go1.textContent = '获取模型列表'; });
     drawSeg();
     return [h('h2', {}, '让 AI 帮你读文件'), h('p', { class: 'lead' }, '可选。把课程大纲、作业说明放进收件箱后，AI 会找出里面的任务和截止日期。任何 OpenAI 兼容的服务都可以。'),
       fb.set && fm.set ? h('div', { class: 'wnow' }, h('span', { class: 'badge t-ok' }, icon('check', 'sm'), `已设置 · ${fm.value}`)) : '',
-      seg, help, h('div', { class: 'wgrid' }, h('label', {}, '接口地址'), base, h('label', {}, 'API 密钥'), key, modelLabel, modelSel), out,
+      seg, help, h('div', { class: 'wgrid' }, h('label', {}, '接口地址'), base, h('label', {}, 'API 密钥'), key, modelLabel, modelSel, modelIn), out,
       h('p', { class: 'faint small' }, '注意：收件箱里文件的文字会发给这个服务去读。敏感文件不要放进收件箱，或者选「本机模型」。'),
       foot(h('button', { class: 'btn ghost', onclick: next }, fb.set ? '保持不变' : '跳过'), go1)];
   }
@@ -359,7 +375,7 @@ async function viewSetup(view) {
       busy(go1, true, '保存中…'); try {
         const changes = {}; if (base.value !== (F('BRIEF_BASE_DATE').value || '')) changes.BRIEF_BASE_DATE = base.value || null; if (ign.value.trim() !== (F('BRIEF_IGNORE').value || '')) changes.BRIEF_IGNORE = ign.value.trim() || null;
         if (Object.keys(changes).length) await save(changes);
-        if (time.value && time.value !== slot) { const j = await waitJob('schedule', time.value); if (j.state !== 'done') { out.replaceChildren(msg(false, '修改发送时间没有成功，详情见右下角。')); return; } $('#drawerHost').replaceChildren(); }
+        if (time.value && (time.value !== slot || !OV?.schedule?.loaded)) { const j = await waitJob('schedule', time.value); if (j.state !== 'done') { out.replaceChildren(msg(false, '修改发送时间没有成功，详情见右下角。')); return; } $('#drawerHost').replaceChildren(); }
         await refreshOverview(); timeDone = true; next();
       } catch (e) { out.replaceChildren(msg(false, e.data?.fieldErrors ? Object.values(e.data.fieldErrors).join('；') : e.message)); } finally { busy(go1, false); }
     } }, '保存并继续');
@@ -379,13 +395,13 @@ async function viewSetup(view) {
       if (!(await confirmBox('发送测试简报', '会真的往你的 Discord 频道发一条带 🧪 的简报。', '发送'))) return;
       busy(testBtn, true, '正在生成并发送…'); testOut.replaceChildren();
       try {
-        const j = await waitJob('test'); $('#drawerHost').replaceChildren();
+        const j = await waitJob('test'); if (j.state === 'done') $('#drawerHost').replaceChildren();
         testOut.replaceChildren(j.state === 'done' ? msg(true, '已发送！去 Discord 频道看看。没看到的话，确认第 1 步复制的是这个频道的 Webhook。')
-          : msg(false, ['没有发出去。', h('a', { href: '#logs', onclick: (e) => { e.preventDefault(); go('logs'); } }, '看日志里的原因'), '，或者回到第 1 步检查 Webhook。']));
+          : msg(false, ['没有发出去。原因在右下角的输出里，也可以', h('a', { href: '#logs', onclick: (e) => { e.preventDefault(); go('logs'); } }, '看日志'), '，或者回到第 1 步检查 Webhook。']));
       } catch (e) { testOut.replaceChildren(msg(false, e.message)); } finally { busy(testBtn, false); }
     } }, icon('send'), '发一条测试简报');
-    return [h('h2', {}, '设置好了 🎉'), h('p', { class: 'lead' }, `从明天起，每天 ${slot} 你的 Discord 会收到一份简报。现在可以先发一条测试的看看效果。`),
-      h('ul', { class: 'checks wsum' }, row(d[0], 'Discord', d[0] ? F('DISCORD_WEBHOOK_URL').hint : '还没设置：简报发不出去'), row(d[1], '日历', d[1] ? F('ICS_URLS').hint : '跳过了，以后可以在「设置」里补'), row(d[2], 'AI', d[2] ? F('AI_MODEL').value : '跳过了，收件箱里的文件不会被读取'), row(true, '发送时间', `每天 ${slot}`)),
+    return [h('h2', {}, '设置好了 🎉'), h('p', { class: 'lead' }, OV?.schedule?.loaded ? `从明天起，每天 ${slot} 你的 Discord 会收到一份简报。现在可以先发一条测试的看看效果。` : '设置已保存，但定时任务还没有加载。现在可以先发一条测试的看看效果。'),
+      h('ul', { class: 'checks wsum' }, row(d[0], 'Discord', d[0] ? F('DISCORD_WEBHOOK_URL').hint : '还没设置：简报发不出去'), row(d[1], '日历', d[1] ? F('ICS_URLS').hint : '跳过了，以后可以在「设置」里补'), row(d[2], 'AI', d[2] ? F('AI_MODEL').value : '跳过了，收件箱里的文件不会被读取'), row(!!OV?.schedule?.loaded, '发送时间', OV?.schedule?.loaded ? `每天 ${slot}` : '定时任务没有加载：回到第 4 步点「保存并继续」')),
       h('div', { class: 'wcta' }, testBtn, h('span', { class: 'small muted' }, '大约 30 秒。带 🧪 标记，不影响明天正式的那条。')), testOut,
       h('div', { class: 'card wwake' }, h('div', { class: 'hd' }, icon('moon'), h('h2', {}, '建议：让 Mac 早上自动醒来')), h('div', { class: 'bd' },
         h('p', { class: 'small muted' }, `Mac 睡着时简报要等它醒来才发。复制下面这条命令，打开「终端」粘贴，按回车后输入开机密码（输入时不显示）。晚上记得插着电源。`),
@@ -403,34 +419,44 @@ async function viewSetup(view) {
 }
 
 // ---------------------------------------------------------------- view: tasks ------------------------------------------
+let wantAddTask = false; // set by the command palette: open the tasks page with the add row ready
 async function viewTasks(view) {
-  let data = await api('/api/tasks');
+  const seq = renderSeq; let data = await api('/api/tasks'); if (seq !== renderSeq) return;
   if (data.error) { view.replaceChildren(h('div', { class: 'card empty' }, h('div', { class: 'ico' }, icon('triangle-alert', 'lg')), h('b', {}, '任务表读不了'), data.error, h('div', { class: 'small' }, '可能是表头被改坏了，可以用 tasks.csv.bak 恢复。'))); return; }
-  let filter = 'active'; let q = ''; const changes = new Map(); const adds = []; let adding = false;
+  // Freshly extracted tasks wait as 待确认; when there are any, that list is what needs the user, so open on it.
+  let filter = data.rows.some((r) => r._kind === 'pending') ? 'pending' : 'active'; let q = ''; const changes = new Map(); const adds = []; let adding = wantAddTask; wantAddTask = false; let saving = false;
   const KIND = { '待确认': 'pending', '进行中': 'active', '完成': 'done', '忽略': 'ignored' };
+  // the add row's inputs live outside drawAll(), so a status change on another row cannot wipe a half-typed task
+  const f = { t: h('input', { type: 'text', placeholder: '任务名称（必填）' }), c: h('input', { type: 'text', placeholder: '分类' }), d: h('input', { type: 'date' }), n: h('input', { type: 'text', placeholder: '备注' }) };
+  const clearForm = () => { for (const el of Object.values(f)) el.value = ''; };
   const valueOf = (r, k) => (changes.get(r._i)?.[k] ?? r[k] ?? '');
   const kindOf = (r) => (changes.get(r._i)?.['状态'] !== undefined ? (KIND[changes.get(r._i)['状态']] || 'unknown') : r._kind);
   const counts = () => { const c = { active: 0, pending: 0, done: 0, ignored: 0, all: data.rows.length }; for (const r of data.rows) c[kindOf(r)] = (c[kindOf(r)] || 0) + 1; return c; };
-  const isDirty = () => changes.size > 0 || adds.length > 0; dirtyGuard = isDirty;
+  const isDirty = () => changes.size > 0 || adds.length > 0 || (adding && f.t.value.trim() !== ''); dirtyGuard = isDirty;
   const setField = (r, k, v) => { const c = changes.get(r._i) || {}; if (v === (r[k] ?? '')) delete c[k]; else c[k] = v; if (Object.keys(c).length) changes.set(r._i, c); else changes.delete(r._i); drawBar(); };
   const barHost = h('div'); const segHost = h('div'); const tableHost = h('div');
   function drawBar() {
     const n = changes.size + adds.length;
-    barHost.replaceChildren(n ? h('div', { class: 'savebar' }, h('span', {}, `${n} 处修改还没保存`), h('button', { class: 'btn ghost', onclick: () => { changes.clear(); adds.length = 0; drawAll(); } }, '撤销'), h('button', { class: 'btn sun', onclick: save }, icon('check'), '保存到任务表')) : '');
+    barHost.replaceChildren(n ? h('div', { class: 'savebar' }, h('span', {}, `${n} 处修改还没保存`), h('button', { class: 'btn ghost', onclick: () => { changes.clear(); adds.length = 0; drawAll(); } }, '撤销'), h('button', { class: 'btn sun', disabled: saving, onclick: save }, icon('check'), '保存到任务表')) : '');
   }
   async function save() {
+    if (saving) return; saving = true; drawBar();
     try {
       data = await api('/api/tasks', { method: 'POST', body: { version: data.version, updates: [...changes].map(([index, fields]) => ({ index, fields })), additions: adds } });
       changes.clear(); adds.length = 0; toast('已保存。原来的文件留在 tasks.csv.bak'); drawAll(); refreshOverview();
     } catch (e) {
       toast(e.message, 'bad');
       if (e.data?.conflict && await confirmBox('任务表被别处改过', '早上的运行或 Excel 在你打开之后改过它。要放弃你的修改并重新读取吗？', '重新读取', true)) { changes.clear(); adds.length = 0; data = await api('/api/tasks'); drawAll(); }
-    }
+    } finally { saving = false; drawBar(); }
   }
   function statusSel(r) {
     const v = valueOf(r, '状态');
     const sel = h('select', { class: `stsel st-${KIND[v] || 'pending'}`, 'aria-label': '状态', onchange: (e) => { setField(r, '状态', e.target.value); drawAll(); } }, [...new Set([...data.statuses, v])].map((x) => h('option', { value: x, selected: x === v }, x)));
-    return h('span', { class: 'selwrap' }, sel, icon('chevron-right'));
+    const wrap = h('span', { class: 'selwrap' }, sel, icon('chevron-right'));
+    if (KIND[v] !== 'pending') return wrap;
+    // One click instead of a dropdown for the common decisions on a freshly extracted task.
+    const quick = (label, status, cls, title) => h('button', { class: `btn sm ${cls}`, title, type: 'button', onclick: () => { setField(r, '状态', status); drawAll(); } }, label);
+    return h('div', { class: 'quick' }, wrap, quick([icon('check', 'sm'), '确认'], '进行中', 'primary', '确认为进行中（会进简报）'), quick('忽略', '忽略', 'ghost', '不是任务或不想跟进：忽略'));
   }
   const inp = (r, k, type = 'text', ph = '') => h('input', { type, placeholder: ph, 'aria-label': k, value: type === 'date' ? (/^\d{4}-\d{2}-\d{2}$/.test(valueOf(r, k)) ? valueOf(r, k) : '') : valueOf(r, k), oninput: (e) => { setField(r, k, e.target.value); e.target.closest('tr').classList.toggle('dirty', changes.has(r._i)); } });
   function dueBadge(d) { const rd = relDay(d); if (!rd) return ''; const cls = rd.startsWith('逾期') ? 't-bad' : (rd === '今天' || rd === '明天') ? 't-warn' : 't-gray'; return h('span', { class: `due badge ${cls}` }, rd); }
@@ -438,10 +464,9 @@ async function viewTasks(view) {
     const c = counts();
     segHost.replaceChildren(h('div', { class: 'seg', role: 'tablist' }, [['active', '进行中'], ['pending', '待确认'], ['done', '完成'], ['ignored', '忽略'], ['all', '全部']].map(([k, l]) => h('button', { class: filter === k ? 'on' : '', role: 'tab', onclick: () => { filter = k; drawAll(); } }, l, h('small', {}, c[k] || 0)))));
     const rows = data.rows.filter((r) => (filter === 'all' || kindOf(r) === filter) && (!q || `${r['任务']} ${r['分类']} ${r['备注']}`.toLowerCase().includes(q))).sort((a, b) => (valueOf(a, '截止日') || '9999').localeCompare(valueOf(b, '截止日') || '9999'));
-    const f = { t: h('input', { type: 'text', placeholder: '任务名称（必填）' }), c: h('input', { type: 'text', placeholder: '分类' }), d: h('input', { type: 'date' }), n: h('input', { type: 'text', placeholder: '备注' }) };
-    const addNow = () => { if (!f.t.value.trim()) { f.t.focus(); return toast('先写任务名称', 'bad'); } adds.push({ '状态': '进行中', '任务': f.t.value.trim(), '分类': f.c.value.trim(), '截止日': f.d.value, '备注': f.n.value.trim() }); adding = false; drawAll(); };
-    f.t.addEventListener('keydown', (e) => { if (e.key === 'Enter') addNow(); if (e.key === 'Escape') { adding = false; drawAll(); } });
-    const newRow = adding ? h('tr', { class: 'newrow' }, h('td', {}, h('span', { class: 'badge t-ok' }, '进行中')), h('td', {}, f.t), h('td', {}, f.c), h('td', {}, f.d), h('td', {}, f.n), h('td', {}, h('div', { style: 'display:flex;gap:6px' }, h('button', { class: 'btn sm primary', onclick: addNow }, '加入'), h('button', { class: 'btn sm ghost', onclick: () => { adding = false; drawAll(); } }, '取消')))) : null;
+    const addNow = () => { if (!f.t.value.trim()) { f.t.focus(); return toast('先写任务名称', 'bad'); } adds.push({ '状态': '进行中', '任务': f.t.value.trim(), '分类': f.c.value.trim(), '截止日': f.d.value, '备注': f.n.value.trim() }); adding = false; clearForm(); drawAll(); };
+    f.t.onkeydown = (e) => { if (e.key === 'Enter') addNow(); if (e.key === 'Escape') { adding = false; clearForm(); drawAll(); } };
+    const newRow = adding ? h('tr', { class: 'newrow' }, h('td', {}, h('span', { class: 'badge t-ok' }, '进行中')), h('td', {}, f.t), h('td', {}, f.c), h('td', {}, f.d), h('td', {}, f.n), h('td', {}, h('div', { style: 'display:flex;gap:6px' }, h('button', { class: 'btn sm primary', onclick: addNow }, '加入'), h('button', { class: 'btn sm ghost', onclick: () => { adding = false; clearForm(); drawAll(); } }, '取消')))) : null;
     const addRows = adds.map((a, i) => h('tr', { class: 'dirty' }, h('td', {}, h('span', { class: 'badge t-ok' }, a['状态'])), h('td', {}, a['任务']), h('td', {}, a['分类']), h('td', {}, a['截止日'], dueBadge(a['截止日'])), h('td', {}, a['备注']), h('td', {}, h('button', { class: 'btn sm ghost', onclick: () => { adds.splice(i, 1); drawAll(); } }, icon('x', 'sm'), '移除'))));
     const body = rows.map((r) => {
       const due = valueOf(r, '截止日'); const d = /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : r._due;
@@ -452,12 +477,18 @@ async function viewTasks(view) {
     const empty = !rows.length && !adds.length && !adding;
     tableHost.replaceChildren(empty ? h('div', { class: 'card empty' }, h('div', { class: 'ico' }, icon('list-checks', 'lg')), h('b', {}, filter === 'pending' ? '没有待确认的任务' : '这里还没有任务'), h('div', { class: 'small' }, '点「新任务」手动加，或把课程大纲放进收件箱，让 AI 找出来。'))
       : h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['状态', '任务', '分类', '截止日', '备注', '来源'].map((x) => h('th', {}, x)))), h('tbody', {}, newRow, addRows, body))));
-    bulk.classList.toggle('hidden', !(filter === 'pending' && c.pending));
-    drawBar(); if (adding) setTimeout(() => f.t.focus(), 0);
+    bulk.classList.toggle('hidden', !c.pending); bulkLabel.textContent = `全部 ${c.pending} 项确认为进行中`;
+    drawBar(); if (adding && document.activeElement !== f.t && !Object.values(f).includes(document.activeElement)) setTimeout(() => f.t.focus(), 0);
   }
-  const bulk = h('button', { class: 'btn sm', onclick: () => { for (const r of data.rows) if (kindOf(r) === 'pending') setField(r, '状态', '进行中'); drawAll(); } }, icon('check', 'sm'), '全部确认为进行中');
+  const bulkLabel = h('span');
+  const bulk = h('button', { class: 'btn sm', onclick: async () => {
+    const n = counts().pending; if (!n || saving) return;
+    if (!(await confirmBox('全部确认', `把 ${n} 项待确认任务都改成「进行中」并保存到任务表${isDirty() ? '（表里其他没保存的修改也会一起保存）' : ''}。不想要的可以之后再改成「忽略」。`, '全部确认并保存'))) return;
+    for (const r of data.rows) if (kindOf(r) === 'pending') setField(r, '状态', '进行中');
+    await save();
+  } }, icon('check', 'sm'), bulkLabel);
   const search = h('div', { class: 'search' }, icon('search'), h('input', { type: 'search', placeholder: '搜索任务、分类、备注', oninput: (e) => { q = e.target.value.trim().toLowerCase(); drawAll(); } }));
-  $('#subtitle').textContent = '直接在表里改。只有「进行中」会进简报；保存时先备份，并确认没有别处同时在改。';
+  $('#subtitle').textContent = '直接在表里改。只有「进行中」会进简报；待确认的可以逐条点「确认」，或一键全部确认。保存时先备份，并确认没有别处同时在改。';
   view.replaceChildren(h('div', { class: 'toolbar' }, segHost, bulk, h('span', { class: 'spacer' }), search, h('a', { class: 'btn icon', href: '/api/tasks/download', title: '下载任务表（CSV）', 'aria-label': '下载任务表' }, icon('download')), h('button', { class: 'btn primary', onclick: () => { adding = true; filter = filter === 'active' || filter === 'all' ? filter : 'active'; drawAll(); } }, icon('plus'), '新任务')), tableHost, barHost);
   drawAll();
 }
@@ -467,19 +498,28 @@ const FILE_STATE = { new: ['等待读取', 't-info'], partial: ['读到一半', 
 async function viewInbox(view) {
   let data = await api('/api/inbox');
   const list = h('div', { class: 'files' }); const summary = h('div', { class: 'toolbar', style: 'margin:16px 0 0' });
-  const input = h('input', { type: 'file', multiple: true, accept: '.pdf,.docx,.txt,.md', class: 'hidden', onchange: (e) => upload([...e.target.files]) });
+  const input = h('input', { type: 'file', multiple: true, accept: '.pdf,.docx,.txt,.md', class: 'hidden', onchange: (e) => { const files = [...e.target.files]; e.target.value = ''; upload(files); } });
   const drop = h('div', { class: 'drop', tabindex: 0, role: 'button', onclick: () => input.click(), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') input.click(); } },
     h('div', { class: 'ico' }, icon('file-up', 'lg')), h('b', {}, '把文件拖到这里，或点一下选择'), h('div', { class: 'small' }, '课程大纲、作业说明、项目计划 · PDF、Word（docx）、txt、md · 下一次运行时 AI 会读它们'));
   for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
   for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); });
   drop.addEventListener('drop', (e) => upload([...e.dataTransfer.files]));
+  let uploading = false;
   async function upload(files) {
-    for (const file of files) { try { const r = await api('/api/inbox/upload', { method: 'POST', raw: true, body: file, headers: { 'X-File-Name': encodeURIComponent(file.name) } }); toast(`已放进收件箱：${r.saved}`); } catch (e) { toast(`${file.name}：${e.message}`, 'bad'); } }
+    if (!files.length) return; if (uploading) return toast('上一批还在上传，请稍等', 'bad');
+    uploading = true; const title = drop.querySelector('b'); const was = title.textContent; title.textContent = `正在上传 ${files.length} 个文件…`; drop.classList.add('busy');
+    try { for (const file of files) { try { const r = await api('/api/inbox/upload', { method: 'POST', raw: true, body: file, headers: { 'X-File-Name': encodeURIComponent(file.name) } }); toast(`已放进收件箱：${r.saved}`); } catch (e) { toast(`${file.name}：${e.message}`, 'bad'); } } }
+    finally { uploading = false; title.textContent = was; drop.classList.remove('busy'); }
     data = await api('/api/inbox'); draw(); refreshOverview();
   }
-  async function act(action, name, full) {
+  let acting = false;
+  async function act(action, name, full, btn) {
+    if (acting) return;
     if (action === 'remove' && !(await confirmBox('移到废纸篓', `「${name}」会被移到废纸篓（可以从废纸篓找回）。已经从它读出的任务会留在任务表里。`, '移到废纸篓', true))) return;
-    try { data = await api('/api/inbox/action', { method: 'POST', body: { action, name, full } }); toast(data.message || '完成'); draw(); refreshOverview(); } catch (e) { toast(e.message, 'bad'); }
+    acting = true; const kids = btn ? [...btn.childNodes] : null; if (btn) { btn.disabled = true; btn.replaceChildren(h('span', { class: 'spin', style: 'width:12px;height:12px' })); }
+    try { data = await api('/api/inbox/action', { method: 'POST', body: { action, name, full } }); toast(data.message || '完成'); draw(); refreshOverview(); }
+    catch (e) { toast(e.message, 'bad'); if (btn && kids) { btn.disabled = false; btn.replaceChildren(...kids); } }
+    finally { acting = false; }
   }
   function draw() {
     if (data.error) { list.replaceChildren(h('div', { class: 'card empty' }, data.error)); return; }
@@ -489,12 +529,12 @@ async function viewInbox(view) {
       const [label, tone] = FILE_STATE[f.state] || [f.state, 't-gray'];
       const ext = (f.name.split('.').pop() || '').toLowerCase();
       const acts = [];
-      if (f.state === 'ignored') acts.push(h('button', { class: 'btn sm', onclick: () => act('unignore', f.name) }, icon('undo-2', 'sm'), '取消忽略'));
-      if (['failed', 'gave-up', 'waiting-extraction', 'partial'].includes(f.state)) acts.push(h('button', { class: 'btn sm', onclick: () => act('retry', f.name) }, icon('rotate-cw', 'sm'), '重试'));
-      if (f.state === 'done') acts.push(h('button', { class: 'btn sm', title: '从头再读一遍（完全相同的任务不会重复加入）', onclick: () => act('retry', f.name, true) }, icon('rotate-cw', 'sm'), '重新读'));
-      if (['new', 'partial', 'failed', 'gave-up', 'waiting-extraction'].includes(f.state)) acts.push(h('button', { class: 'btn sm ghost', onclick: () => act('ignore', f.name) }, '忽略'));
+      if (f.state === 'ignored') acts.push(h('button', { class: 'btn sm', onclick: (e) => act('unignore', f.name, false, e.currentTarget) }, icon('undo-2', 'sm'), '取消忽略'));
+      if (['failed', 'gave-up', 'waiting-extraction', 'partial'].includes(f.state)) acts.push(h('button', { class: 'btn sm', onclick: (e) => act('retry', f.name, false, e.currentTarget) }, icon('rotate-cw', 'sm'), '重试'));
+      if (f.state === 'done') acts.push(h('button', { class: 'btn sm', title: '从头再读一遍（完全相同的任务不会重复加入）', onclick: (e) => act('retry', f.name, true, e.currentTarget) }, icon('rotate-cw', 'sm'), '重新读'));
+      if (['new', 'partial', 'failed', 'gave-up', 'waiting-extraction'].includes(f.state)) acts.push(h('button', { class: 'btn sm ghost', onclick: (e) => act('ignore', f.name, false, e.currentTarget) }, '忽略'));
       if (['pdf', 'docx', 'txt', 'md'].includes(ext)) acts.push(h('button', { class: 'btn sm ghost icon', title: '查看 AI 会读到的文字', 'aria-label': `查看 ${f.name} 的文字`, onclick: () => showText(f.name) }, icon('book-open', 'sm')));
-      acts.push(h('button', { class: 'btn sm ghost danger icon', title: '移到废纸篓', 'aria-label': `把 ${f.name} 移到废纸篓`, onclick: () => act('remove', f.name) }, icon('trash-2', 'sm')));
+      acts.push(h('button', { class: 'btn sm ghost danger icon', title: '移到废纸篓', 'aria-label': `把 ${f.name} 移到废纸篓`, onclick: (e) => act('remove', f.name, false, e.currentTarget) }, icon('trash-2', 'sm')));
       return h('div', { class: 'file' }, h('div', { class: `ft ft-${['pdf', 'docx', 'txt', 'md'].includes(ext) ? ext : 'other'}` }, ext.slice(0, 4) || '?'),
         h('div', { style: 'min-width:0' }, h('div', { class: 'name' }, f.name, h('span', { class: `badge ${tone}` }, h('span', { class: 'dot' }), label)), h('div', { class: 'detail' }, f.detail, f.truncated ? ' · 文件太长，只读了前一部分' : '')),
         h('div', { class: 'acts' }, acts));
@@ -518,15 +558,21 @@ async function showText(name) {
 // ---------------------------------------------------------------- view: settings ---------------------------------------
 const GROUP_ICON = { 推送: 'send', 日历: 'calendar-days', AI: 'sparkles', 文件与任务: 'file-text', 简报外观: 'eye', 高级: 'wrench' };
 async function viewSettings(view) {
-  let data = await api('/api/settings');
-  const edits = {}; let errors = {};
-  dirtyGuard = () => Object.keys(edits).length > 0;
+  const seq = renderSeq; let data = await api('/api/settings'); if (seq !== renderSeq) return;
+  const edits = {}; let errors = {}; let saving = false;
+  // 更换/填写 opens an empty box as edits[key] = ''; left empty it is not a change (the server would read '' as "remove")
+  const isSecret = (k) => data.fields.some((x) => x.key === k && x.secret);
+  const real = () => Object.fromEntries(Object.entries(edits).filter(([k, v]) => !(isSecret(k) && v === '')));
+  dirtyGuard = () => Object.keys(real()).length > 0;
   const barHost = h('div'); const host = h('div', { class: 'grid' }); const toc = h('div', { class: 'toc' });
-  const drawBar = () => { const n = Object.keys(edits).length; barHost.replaceChildren(n ? h('div', { class: 'savebar' }, h('span', {}, `${n} 项设置还没保存`), h('button', { class: 'btn ghost', onclick: () => { for (const k of Object.keys(edits)) delete edits[k]; errors = {}; draw(); } }, '撤销'), h('button', { class: 'btn sun', onclick: save }, icon('check'), '保存设置')) : ''); };
+  const drawBar = () => { const n = Object.keys(real()).length; barHost.replaceChildren(n ? h('div', { class: 'savebar' }, h('span', {}, `${n} 项设置还没保存`), h('button', { class: 'btn ghost', onclick: () => { for (const k of Object.keys(edits)) delete edits[k]; errors = {}; draw(); } }, '撤销'), h('button', { class: 'btn sun', disabled: saving, onclick: save }, icon('check'), '保存设置')) : ''); };
   const set = (k, v, orig) => { if (v === orig) delete edits[k]; else edits[k] = v; drawBar(); };
   async function save() {
-    try { data = await api('/api/settings', { method: 'POST', body: { changes: edits } }); for (const k of Object.keys(edits)) delete edits[k]; errors = {}; toast('已保存，下一次运行生效（原文件留有 .bak 备份）'); refreshOverview(); }
+    if (saving) return; const changes = real(); if (!Object.keys(changes).length) return;
+    saving = true; drawBar();
+    try { data = await api('/api/settings', { method: 'POST', body: { changes } }); for (const k of Object.keys(edits)) delete edits[k]; errors = {}; toast('已保存，下一次运行生效（原文件留有 .bak 备份）'); refreshOverview(); }
     catch (e) { errors = e.data?.fieldErrors || {}; toast(e.data?.fieldErrors ? '有设置不对，请看标红的地方' : e.message, 'bad'); }
+    finally { saving = false; }
     draw();
   }
   function fieldInput(f) {
@@ -555,7 +601,9 @@ async function viewSettings(view) {
   }
   function draw() {
     const groups = {}; for (const f of data.fields) (groups[f.group] ||= []).push(f);
-    const extra = { AI: h('button', { class: 'btn sm', onclick: () => runJob('checkai') }, icon('activity', 'sm'), '测试连接'), 日历: h('button', { class: 'btn sm', onclick: () => runJob('checkcal') }, icon('activity', 'sm'), '测试链接'), 推送: h('button', { class: 'btn sm', onclick: () => runJob('test') }, icon('send', 'sm'), '发测试简报') };
+    // the tests run against the SAVED file: with unsaved edits in the group they would test the old value and mislead
+    const testBtn = (g, kind, ic, label) => h('button', { class: 'btn sm', onclick: () => { const dirty = Object.keys(real()).some((k) => data.fields.find((x) => x.key === k)?.group === g); if (dirty) toast('先保存这一组的修改，再测试', 'bad'); else runJob(kind); } }, icon(ic, 'sm'), label);
+    const extra = { AI: testBtn('AI', 'checkai', 'activity', '测试连接'), 日历: testBtn('日历', 'checkcal', 'activity', '测试链接'), 推送: testBtn('推送', 'test', 'send', '发测试简报') };
     toc.replaceChildren(...Object.keys(groups).map((g) => h('a', { href: `#settings`, onclick: (e) => { e.preventDefault(); document.getElementById(`grp-${g}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, g)));
     host.replaceChildren(
       data.errors?.length ? h('div', { class: 'card', style: 'padding:12px 16px' }, h('span', { class: 'badge t-warn' }, icon('triangle-alert', 'sm'), `设置文件第 ${data.errors.join('、')} 行看不懂`), h('span', { class: 'muted small', style: 'margin-left:8px' }, '运行时会跳过这些行；在这里重新保存对应的设置可以修正。')) : '',
@@ -586,9 +634,13 @@ async function viewLogs(view) {
     term.scrollTop = term.scrollHeight;
   }
   async function load() {
-    const d = await api(`/api/logs?which=${which}&date=${date}`);
-    if (dateSel.dataset.n !== String(d.days.length)) { dateSel.replaceChildren(...(d.days.length ? d.days : [date]).map((x) => h('option', { value: x, selected: x === date }, x))); dateSel.dataset.n = String(d.days.length); }
-    last = d.text || ''; paint();
+    try {
+      const d = await api(`/api/logs?which=${which}&date=${date}`);
+      // today is always offered, even before today's run has written a log, so the list never shows another day than the pane
+      const days = d.days.includes(date) ? d.days : [date, ...d.days];
+      if (dateSel.dataset.days !== days.join()) { dateSel.replaceChildren(...days.map((x) => h('option', { value: x, selected: x === date }, x))); dateSel.dataset.days = days.join(); }
+      dateSel.value = date; last = d.text || ''; paint();
+    } catch (e) { toast(e.message, 'bad'); }
   }
   $('#subtitle').textContent = '日志里的链接和密钥会被替换成 <链接> / <密钥>。';
   view.replaceChildren(h('div', { class: 'toolbar' }, segW, dateSel, segL, h('span', { class: 'spacer' }), auto, h('button', { class: 'btn sm', onclick: load }, icon('refresh-cw', 'sm'), '刷新')), term);
@@ -624,7 +676,20 @@ async function runJob(kind, param) {
   if (kind === 'force' && !(await confirmBox('补发今天的简报', '只在今天确实没收到时使用。补发不写「已发送」标记：如果今天的定时点还没跑完，之后可能会再收到一份。', '补发', true))) return;
   try { const j = await api('/api/jobs', { method: 'POST', body: { kind, param } }); showJob(j); poll(); } catch (e) { toast(e.message, 'bad'); }
 }
-function poll() { clearInterval(jobTimer); jobTimer = setInterval(async () => { try { const j = await api('/api/jobs/current'); showJob(j); if (j.state !== 'running') { clearInterval(jobTimer); toast(`${j.label}：${j.state === 'done' ? '完成' : '失败'}`, j.state === 'done' ? 'ok' : 'bad'); refreshOverview().then(() => { if (current === 'overview') viewOverview($('#view'), true); }); } } catch { clearInterval(jobTimer); } }, 1000); }
+function poll() {
+  clearInterval(jobTimer); let failures = 0;
+  jobTimer = setInterval(async () => {
+    try {
+      const j = await api('/api/jobs/current'); failures = 0; showJob(j);
+      if (j.state !== 'running') { clearInterval(jobTimer); toast(`${j.label}：${j.state === 'done' ? '完成' : '失败'}`, j.state === 'done' ? 'ok' : 'bad'); refreshOverview().then(() => { if (current === 'overview' && pageEl()) viewOverview(pageEl(), true); else if (current === 'tools' && j.kind === 'schedule') render(); }); }
+    } catch {
+      // one failed fetch (the console is busy writing, the laptop just woke up) is not the end of the job
+      if (++failures < 5) return;
+      clearInterval(jobTimer); toast('连不上控制台，请刷新页面再看结果', 'bad');
+      const st = $('#drawerHost [data-role="status"]'); if (st) st.replaceWith(h('span', { class: 'badge t-bad', 'data-role': 'status' }, h('span', { class: 'dot' }), '连不上'));
+    }
+  }, 1000);
+}
 function renderBrief(text) {
   const lines = text.split('\n'); const box = h('div', { class: 'embed' });
   if (lines.length) { box.append(h('div', { style: 'font-weight:700;color:#f2f3f5;margin-bottom:6px' }, lines.shift())); while (lines.length && !lines[0].trim()) lines.shift(); }
@@ -637,9 +702,11 @@ function renderBrief(text) {
   }
   return h('div', { class: 'discord' }, h('div', { class: 'who' }, h('div', { class: 'av' }, icon('sunrise')), h('div', {}, h('b', {}, '每日简报'), h('small', {}, '预览 · 不会发送'))), box);
 }
+let dismissedJob = null; // the user closed the drawer of this job: keep it closed, the toast from poll() reports how it ended
 function showJob(j) {
   if (!j || !j.id) return;
   const host = $('#drawerHost'); const running = j.state === 'running';
+  if (dismissedJob === j.id) { if (!running) dismissedJob = null; return; }
   const secs = Math.round(((j.endedAt || Date.now()) - j.startedAt) / 1000);
   let body;
   if (j.kind === 'preview' && j.state === 'done') {
@@ -650,8 +717,17 @@ function showJob(j) {
     const term = h('div', { class: 'term' }, h('div', { style: 'padding:8px 0' }, (j.output || (running ? '开始……' : '（没有输出）')).split('\n').map((l, i) => h('div', { class: 'ln' }, h('span', { class: 'no' }, i + 1), h('span', { class: 'tx' }, l || ' ')))));
     body = term;
   }
-  const status = running ? h('div', { class: 'spin' }) : h('span', { class: `badge ${j.state === 'done' ? 't-ok' : 't-bad'}` }, h('span', { class: 'dot' }), j.state === 'done' ? '完成' : '失败');
-  const drawer = h('div', { class: 'drawer', role: 'status' }, h('header', {}, status, h('b', {}, j.label), h('span', { class: 'faint small num' }, `${secs} 秒`), h('button', { class: 'btn ghost sm icon', 'aria-label': '关闭', onclick: () => host.replaceChildren() }, icon('x', 'sm'))), h('div', { class: 'body' }, body));
+  const status = running ? h('div', { class: 'spin', 'data-role': 'status' }) : h('span', { class: `badge ${j.state === 'done' ? 't-ok' : 't-bad'}`, 'data-role': 'status' }, h('span', { class: 'dot' }), j.state === 'done' ? '完成' : '失败');
+  const open = host.firstElementChild;
+  if (open && open.dataset.job === String(j.id)) {
+    // Same job as the drawer already on screen: refresh its parts in place. Rebuilding the drawer every second replayed
+    // its entrance animation, so a 100-second job looked like 100 pop-ups.
+    open.querySelector('[data-role="status"]').replaceWith(status); open.querySelector('[data-role="secs"]').textContent = `${secs} 秒`;
+    const b = open.querySelector('.body'); const follow = running && b.scrollTop + b.clientHeight >= b.scrollHeight - 8;
+    b.replaceChildren(body); if (follow) b.scrollTop = b.scrollHeight;
+    return;
+  }
+  const drawer = h('div', { class: 'drawer', role: 'status', 'data-job': String(j.id) }, h('header', {}, status, h('b', {}, j.label), h('span', { class: 'faint small num', 'data-role': 'secs' }, `${secs} 秒`), h('button', { class: 'btn ghost sm icon', 'aria-label': '关闭', onclick: () => { host.replaceChildren(); dismissedJob = j.id; } }, icon('x', 'sm'))), h('div', { class: 'body' }, body));
   host.replaceChildren(drawer);
   const b = drawer.querySelector('.body'); if (running) b.scrollTop = b.scrollHeight;
 }
@@ -666,7 +742,7 @@ function palette() {
     { grp: '操作', label: '完整自检', ic: 'activity', run: () => runJob('status') },
     { grp: '操作', label: '测试 AI 连接', ic: 'sparkles', run: () => runJob('checkai') },
     { grp: '操作', label: '测试日历链接', ic: 'calendar-days', run: () => runJob('checkcal') },
-    { grp: '操作', label: '新增任务', ic: 'plus', run: () => go('tasks') },
+    { grp: '操作', label: '新增任务', ic: 'plus', run: () => { wantAddTask = true; if (current === 'tasks') { dirtyGuard = null; render(); } else go('tasks'); } },
     { grp: '操作', label: '测试本机通知', ic: 'bell-ring', run: () => runJob('notify') },
     { grp: '操作', label: '下载任务表', ic: 'download', run: () => { location.href = '/api/tasks/download'; } },
     { grp: '外观', label: '切换深色 / 浅色', ic: 'moon', run: toggleTheme },
@@ -698,7 +774,7 @@ document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || $('.overlay');
   if (!typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const map = { 0: 'setup', 1: 'overview', 2: 'tasks', 3: 'inbox', 4: 'settings', 5: 'logs', 6: 'tools' };
-    if (map[e.key]) go(map[e.key]); else if (e.key === 'r') { refreshOverview(); render(); }
+    if (map[e.key]) go(map[e.key]); else if (e.key === 'r') refresh();
   }
 });
 
