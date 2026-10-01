@@ -202,12 +202,17 @@ export function history(ctx, days = 14) {
   return out;
 }
 
-function nextRun(slots, now = new Date()) {
+// When the scheduled job will next really try to send. While today's brief is still open (not sent, outcome not unknown)
+// a later retry slot today counts; once it is sent, or its outcome is unknown, the remaining slots today only skip, so
+// the next attempt is the first slot of tomorrow.
+export function nextRun(slots, todayState, now = new Date()) {
   if (!slots.length) return null;
-  const first = slots[0]; const [h, m] = first.split(':').map(Number);
-  const t = new Date(now); t.setHours(h, m, 0, 0);
-  if (t <= now) t.setDate(t.getDate() + 1);
-  return t.toISOString();
+  const at = (slot, addDays) => { const [h, m] = slot.split(':').map(Number); const t = new Date(now); t.setDate(t.getDate() + addDays); t.setHours(h, m, 0, 0); return t; };
+  if (todayState !== 'sent' && todayState !== 'unknown') {
+    const later = slots.map((s) => at(s, 0)).filter((t) => t > now).sort((a, b) => a - b)[0];
+    if (later) return later.toISOString();
+  }
+  return at(slots[0], 1).toISOString();
 }
 
 export function overview(ctx) {
@@ -249,7 +254,7 @@ export function overview(ctx) {
   return {
     now: new Date().toISOString(), home: ctx.home.replace(os.homedir(), '~'), level, checks, running,
     today: { date: today.date, state: today.state, sentAt: today.sentAt, engine: today.engine, alerts },
-    nextRun: nextRun(sched.slots), schedule: sched, tz, engine, build, deployed, n8nVersion: n8nVer,
+    nextRun: nextRun(sched.slots, today.state, ctx.opts.now ? new Date(ctx.opts.now) : new Date()), schedule: sched, tz, engine, build, deployed, n8nVersion: n8nVer,
     lastRun: lastRun ? { ...lastRun, reason: ctx.clean(lastRun.reason) } : null, history: hist, dbSize, consoleOutdated: !!(ctx.outdated && ctx.outdated()),
     setup: { needed: !values.DISCORD_WEBHOOK_URL, discord: !!values.DISCORD_WEBHOOK_URL, calendar: !!values.ICS_URLS, ai: !!(values.AI_BASE_URL && values.AI_MODEL), sysTz },
   };
