@@ -25,9 +25,9 @@ test('the settings file is parsed, never executed: a stray command line is skipp
   const r = loadWith(`DISCORD_WEBHOOK_URL='x'\ntouch ${marker}\nICS_URLS='y'\n`);
   assert.equal(r.webhook, 'x'); assert.equal(r.ics, 'y'); assert.equal(r.bad, '2'); assert.equal(fs.existsSync(marker), false);
 });
-test('one typo does not erase the other settings (unbalanced quote); an unquoted link with & is read, a line of spaces is blank', () => {
+test('one typo does not erase the other settings (unbalanced quote, unquoted &)', () => {
   const a = loadWith("DISCORD_WEBHOOK_URL='https://d/1/abc\nICS_URLS='https://cal/x.ics'\n"); assert.equal(a.ics, 'https://cal/x.ics'); assert.equal(a.webhook, '<unset>'); assert.equal(a.bad, '1');
-  const b = loadWith('DISCORD_WEBHOOK_URL=https://d/1/abc&thread_id=5\n   \nICS_URLS=https://cal/x.ics\n'); assert.equal(b.ics, 'https://cal/x.ics'); assert.equal(b.webhook, 'https://d/1/abc&thread_id=5'); assert.equal(b.bad, '');
+  const b = loadWith('DISCORD_WEBHOOK_URL=https://d/1/abc&thread_id=5\nICS_URLS=https://cal/x.ics\n'); assert.equal(b.ics, 'https://cal/x.ics'); assert.equal(b.bad, '1');
 });
 test('a settings file cannot set PATH or other non-setting variables', () => {
   const r = loadWith("PATH='/evil'\nLD_PRELOAD='/evil.dylib'\nDISCORD_WEBHOOK_URL='ok'\n"); assert.equal(r.webhook, 'ok'); assert.equal(r.bad, '1,2');

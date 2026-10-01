@@ -41,8 +41,6 @@ say "检查这台 Mac"
 for tool in curl tar shasum rsync sqlite3 mktemp; do command -v "$tool" >/dev/null || { echo "缺少系统工具：${tool}" >&2; exit 1; }; done
 case "$(uname -m)" in arm64) PLATFORM=darwin-arm64; NODE_SHA256="$NODE_SHA256_ARM64" ;; x86_64) PLATFORM=darwin-x64; NODE_SHA256="$NODE_SHA256_X64" ;; *) echo "不支持的处理器：$(uname -m)" >&2; exit 1 ;; esac
 export BRIEF_HOME="${BRIEF_HOME:-$HOME/.n8n-morning-brief}"
-case "$BRIEF_HOME" in *[[:space:]]*) echo "运行目录的路径不能带空格（现在是 ${BRIEF_HOME}）：n8n 的原生模块编译不支持。请不要设置 BRIEF_HOME，或换一个没有空格的路径。" >&2; exit 1 ;; esac
-[ -x /usr/bin/lockf ] || { echo "缺少系统工具：/usr/bin/lockf（macOS 自带；请确认系统完整）" >&2; exit 1; }
 case "$SRC_DIR" in "$BRIEF_HOME"|"$BRIEF_HOME"/*) echo "请在下载解压出来的文件夹里运行 install.sh，不要在 ${BRIEF_HOME} 里运行。" >&2; exit 1 ;; esac
 VOL="$BRIEF_HOME"; while [ ! -d "$VOL" ]; do VOL="$(dirname "$VOL")"; done   # the nearest folder that exists: check the disk that will really hold the runtime
 FREE_GB=$(df -g "$VOL" | awk 'NR==2{print $4}'); [ "${FREE_GB:-0}" -ge 5 ] || { echo "需要大约 5 GB 空闲磁盘空间（现在只有 ${FREE_GB:-?} GB）。" >&2; exit 1; }

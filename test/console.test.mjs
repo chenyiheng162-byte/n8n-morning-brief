@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { ROOT, DEPS_HOME, tmpdir, ics, vevent, holdLock, lockHeld } from './helpers.mjs';
-import { makeContext, createServer, parseConfig, applyConfigChanges, validate, nextRun, listModels } from '../scripts/console.mjs';
+import { makeContext, createServer, parseConfig, applyConfigChanges, validate, nextRun } from '../scripts/console.mjs';
 
 const SECRETS = { hook: 'https://discord.com/api/webhooks/1234/SECRET-HOOK-TOKEN', key: 'sk-THIS_KEY_MUST_NEVER_SHOW_1234', ics: 'https://calendar.google.com/calendar/ical/me/private-SECRETCALTOKEN/basic.ics', token: 'feedbeef'.repeat(6) };
 const CONFIG = `# my settings\nDISCORD_WEBHOOK_URL='${SECRETS.hook}'\nAI_API_KEY='${SECRETS.key}'\nAI_BASE_URL='https://api.deepseek.com'\nAI_MODEL='deepseek-chat'\nICS_URLS='${SECRETS.ics} ${SECRETS.ics}'\nBRIEF_TOKEN='${SECRETS.token}'\nBRIEF_IGNORE="Recess|Lunch"\nBRIEF_SOMETHING='x'\nthis line is broken\n`;
@@ -78,7 +78,7 @@ test('console: no secret value appears in ANY answer (settings, overview, logs),
 
 // ================= settings writes =================
 test('console: the reader is the same as scripts/env.sh (same values, same unreadable lines)', () => {
-  const home = tmpdir('con-parse-'); const text = "DISCORD_WEBHOOK_URL='a b'\nBRIEF_TZ=Asia/Hong_Kong\nexport BRIEF_NOTE=\"x\\\\y\"\r\nPATH='/evil'\nbad line\n# comment\n   \nBRIEF_IGNORE=a&b\n";
+  const home = tmpdir('con-parse-'); const text = "DISCORD_WEBHOOK_URL='a b'\nBRIEF_TZ=Asia/Hong_Kong\nexport BRIEF_NOTE=\"x\\\\y\"\r\nPATH='/evil'\nbad line\n# comment\n";
   fs.writeFileSync(path.join(home, 'config.local.env'), text);
   const p = parseConfig(text);
   assert.equal(envSh(home), `${p.values.DISCORD_WEBHOOK_URL}|${p.values.BRIEF_TZ}|${p.values.BRIEF_NOTE ?? ''}|${p.errors.join(',')}`);
@@ -247,7 +247,6 @@ test('console: an ignored file can be un-ignored, and any file can be moved to t
   fs.writeFileSync(path.join(sb.inbox, 'a.txt'), 'second'); await req(sb, 'POST', '/api/inbox/action', { body: { action: 'remove', name: 'a.txt' } });
   assert.equal(fs.readdirSync(path.join(sb.fakeHome, '.Trash')).length, 2);
   for (const bad of ['../x.txt', 'tasks.csv', '-rf', '']) assert.equal((await req(sb, 'POST', '/api/inbox/action', { body: { action: 'remove', name: bad } })).status, 400, bad);
-  const dash = await req(sb, 'POST', '/api/inbox/action', { body: { action: 'remove', name: '-rf' } }); assert.notEqual(dash.json.error, 'bad request', 'a name starting with - is an ordinary (unknown) file, not "the console is outdated"');
 });
 test('console: what the AI will read from a file can be shown, for text files and for extracted PDF/DOCX', async () => {
   const sb = await sandbox(); fs.writeFileSync(path.join(sb.inbox, 'notes.md'), '# Week 1\nRead chapter 1.');
@@ -444,46 +443,4 @@ test('console: the countdown points at the next slot that will really try to sen
   assert.equal(local(nextRun(slots, 'sent', at('08:01'))), '2 08:00', 'the later slots only skip once it is sent');
   assert.equal(local(nextRun(slots, 'unknown', at('08:01'))), '2 08:00', 'an unknown outcome is not resent automatically');
   assert.equal(nextRun([], 'today', at('07:00')), null);
-});
-
-// ================= second review round (friend feedback) =================
-test('console: before the first run nothing counts as missed (installed-at does not exist yet)', async () => {
-  const sb = await sandbox();
-  const o = (await req(sb, 'GET', '/api/overview')).json;
-  assert.ok(o.history.length >= 14); assert.equal(o.history.at(-1).state, 'today');
-  assert.deepEqual([...new Set(o.history.slice(0, -1).map((d) => d.state))], ['none'], 'the days before are "before installation", not red');
-});
-test('console: a body over the limit gets a 413 with a readable message, not a dropped connection', async () => {
-  const sb = await sandbox();
-  const big = JSON.stringify({ version: 'x', updates: [], additions: [{ '任务': 'a'.repeat(1_100_000) }] });
-  const r = await req(sb, 'POST', '/api/tasks', { raw: big, headers: { 'Content-Type': 'application/json' } });
-  assert.equal(r.status, 413); assert.match(r.json.error, /超过 1 MB/);
-});
-test('console: a PDF whose text could not be extracted says so in the text viewer (and how to retry)', async () => {
-  const sb = await sandbox(); const pdf = Buffer.from('%PDF-1.4 scanned');
-  fs.writeFileSync(path.join(sb.inbox, 'scan.pdf'), pdf);
-  const hash = crypto.createHash('sha256').update(pdf).digest('hex'); fs.mkdirSync(path.join(sb.home, 'data', 'state', 'extracted'), { recursive: true });
-  fs.writeFileSync(path.join(sb.home, 'data', 'state', 'extracted', `${hash}.err`), JSON.stringify({ n: 2, msg: 'no text layer', at: Date.now() }));
-  let t = (await req(sb, 'GET', '/api/inbox/text?name=scan.pdf')).json; assert.equal(t.ready, false); assert.match(t.note, /文字提取失败（第 2 次）/); assert.match(t.note, /no text layer/);
-  fs.writeFileSync(path.join(sb.home, 'data', 'state', 'extracted', `${hash}.err`), JSON.stringify({ n: 5, msg: 'no text layer', at: Date.now() }));
-  t = (await req(sb, 'GET', '/api/inbox/text?name=scan.pdf')).json; assert.match(t.note, /已放弃/); assert.match(t.note, /重试/);
-});
-test('console: a settings file that exists but cannot be read is never replaced by a one-line file', async () => {
-  const sb = await sandbox(); fs.rmSync(path.join(sb.home, 'config.local.env')); fs.mkdirSync(path.join(sb.home, 'config.local.env')); // unreadable as a file
-  const r = await req(sb, 'POST', '/api/settings', { body: { changes: { BRIEF_TZ: 'Asia/Tokyo' } } });
-  assert.equal(r.status, 400); assert.match(r.json.fieldErrors._, /读不出来/); assert.ok(fs.statSync(path.join(sb.home, 'config.local.env')).isDirectory(), 'untouched');
-});
-test('console: a bad schedule time is refused without erasing the record of the previous job', async () => {
-  const sb = await sandbox();
-  await req(sb, 'POST', '/api/jobs', { body: { kind: 'notify' } });
-  let j; for (let i = 0; i < 20; i++) { j = (await req(sb, 'GET', '/api/jobs/current')).json; if (j.state !== 'running') break; await new Promise((r) => setTimeout(r, 50)); }
-  assert.equal((await req(sb, 'POST', '/api/jobs', { body: { kind: 'schedule', param: '25:00' } })).status, 400);
-  assert.equal((await req(sb, 'GET', '/api/jobs/current')).json.id, j.id, 'the finished job is still there');
-});
-test('console: the model list can be missing (gateway without /models): the answer says the model can be typed in', async () => {
-  const srv = http.createServer((rq, rs) => { rs.writeHead(404); rs.end('{}'); }); await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-  try {
-    const r = await listModels({ cfg: () => ({ values: {} }) }, { base: `http://127.0.0.1:${srv.address().port}/v1`, key: 'k' });
-    assert.equal(r.ok, false); assert.equal(r.manual, true);
-  } finally { srv.close(); }
 });

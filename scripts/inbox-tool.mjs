@@ -34,19 +34,7 @@ const { readTasks, statusKind } = ctx.api;
 const load = () => { try { return JSON.parse(fs.readFileSync(seenFile, 'utf8')); } catch (e) { return {}; } };
 const seen = load();
 for (const k of ['done', 'failed', 'failedAt', 'partial', 'offset', 'chunkEnd', 'truncated', 'gaveUp', 'aiCaps']) seen[k] = seen[k] || {};
-// Hashes are remembered per file size and modification time: the console asks for the inbox status every half minute,
-// and reading hundreds of megabytes of PDFs each time is not free. A changed file gets a new hash.
-const hashCacheFile = path.join(stateDir, 'inbox-hashes.json');
-const hashCache = (() => { try { return JSON.parse(fs.readFileSync(hashCacheFile, 'utf8')) || {}; } catch (e) { return {}; } })();
-let hashCacheDirty = false;
-const hashOf = (f) => {
-  const st = fs.statSync(path.join(inbox, f)); const c = hashCache[f];
-  if (c && c.size === st.size && c.mtimeMs === st.mtimeMs && /^[0-9a-f]{64}$/.test(c.hash)) return c.hash;
-  const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(inbox, f))).digest('hex');
-  hashCache[f] = { size: st.size, mtimeMs: st.mtimeMs, hash }; hashCacheDirty = true;
-  return hash;
-};
-const saveHashCache = () => { if (!hashCacheDirty) return; try { for (const k of Object.keys(hashCache)) if (!fs.existsSync(path.join(inbox, k))) delete hashCache[k]; fs.mkdirSync(stateDir, { recursive: true }); const tmp = `${hashCacheFile}.tmp`; fs.writeFileSync(tmp, JSON.stringify(hashCache)); fs.renameSync(tmp, hashCacheFile); } catch (e) { /* a cache only */ } };
+const hashOf = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(inbox, f))).digest('hex');
 const listFiles = () => (fs.existsSync(inbox) ? fs.readdirSync(inbox).filter((n) => !n.startsWith('.') && !n.startsWith('~$') && !/^tasks\.csv(\.|$)/.test(n) && !n.endsWith('.tmp') && (() => { const st = fs.lstatSync(path.join(inbox, n)); return st.isFile() || st.isSymbolicLink(); })()) : []);
 const isLink = (n) => fs.lstatSync(path.join(inbox, n)).isSymbolicLink();
 
@@ -77,7 +65,7 @@ const [cmd, arg, flag] = process.argv.slice(2);
 const wantJson = process.argv.includes('--json');
 
 if (cmd === 'status' || !cmd) {
-  const files = listFiles().map(describe); saveHashCache();
+  const files = listFiles().map(describe);
   let tasks = null; try { const t = readTasks(path.join(inbox, 'tasks.csv'), fs); tasks = t.reduce((a, r) => { const k = statusKind(r['状态']); a[k] = (a[k] || 0) + 1; return a; }, {}); } catch (e) { tasks = { error: String(e.message).slice(0, 120) }; }
   if (wantJson) { console.log(JSON.stringify({ inbox, files, tasks, aiJsonMode: seen.aiCaps.noJsonMode ? 'off (provider has none)' : 'on' }, null, 2)); process.exit(0); }
   console.log(`收件夹：${inbox}`);

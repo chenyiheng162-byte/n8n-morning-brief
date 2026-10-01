@@ -26,14 +26,14 @@ export const HOME_DIR = env0.BRIEF_HOME || path.join(os.homedir(), '.n8n-morning
 const ALLOWED_KEY = /^(DISCORD_WEBHOOK_URL|ICS_URLS|AI_\w+|BRIEF_\w+|N8N_\w+|EXECUTIONS_\w+)$/;
 const RE_SINGLE = /^([A-Za-z_][A-Za-z0-9_]*)='([^']*)'$/;
 const RE_DOUBLE = /^([A-Za-z_][A-Za-z0-9_]*)="((?:[^"$`\\]|\\[^"$`\\])*)"$/;
-const RE_BARE = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@%+,=?&-]*)$/;
+const RE_BARE = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@%+,=?-]*)$/;
 
 // The same strict reading as scripts/env.sh: returns the values and the numbers of the lines it could not use.
 export function parseConfig(text) {
   const values = {}; const errors = [];
   String(text || '').split('\n').forEach((raw, i) => {
     let line = raw.replace(/\r$/, ''); if (line.startsWith('export ')) line = line.slice(7);
-    if (line.trim() === '' || /^\s*#/.test(line)) return;
+    if (line === '' || /^\s*#/.test(line)) return;
     const m = RE_SINGLE.exec(line) || RE_DOUBLE.exec(line) || RE_BARE.exec(line);
     if (!m || !ALLOWED_KEY.test(m[1]) || m[1] === 'BRIEF_HOME' || m[1] === 'BRIEF_STATE_DIR') { errors.push(i + 1); return; }
     values[m[1]] = m[2];
@@ -131,7 +131,7 @@ function settingNotes(key, v) {
 export function makeContext(opts = {}) {
   const home = opts.home || HOME_DIR;
   const cfgFile = path.join(home, 'config.local.env');
-  const readCfg = () => { try { return fs.readFileSync(cfgFile, 'utf8'); } catch (e) { return e.code === 'ENOENT' ? '' : null; } }; // null: exists but unreadable
+  const readCfg = () => { try { return fs.readFileSync(cfgFile, 'utf8'); } catch { return ''; } };
   const cfg = () => parseConfig(readCfg());
   const stateDir = opts.stateDir || env0.BRIEF_STATE_DIR || path.join(home, 'data', 'state');
   const inbox = () => cfg().values.BRIEF_INBOX || opts.inbox || env0.BRIEF_INBOX || path.join(os.homedir(), 'n8n-inbox');
@@ -184,8 +184,7 @@ function scheduleInfo(ctx) {
 export function history(ctx, days = 14) {
   const out = [];
   const now = ctx.opts.now ? new Date(ctx.opts.now) : new Date();
-  // run-brief.sh writes installed-at on the first run; until then nothing could have been missed
-  const installed = (() => { try { return fs.readFileSync(path.join(ctx.stateDir, 'installed-at'), 'utf8').trim() || fmtDay(now); } catch { return fmtDay(now); } })();
+  const installed = (() => { try { return fs.readFileSync(path.join(ctx.stateDir, 'installed-at'), 'utf8').trim(); } catch { return ''; } })();
   for (let i = days - 1; i >= 0; i--) {
     const d = fmtDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i));
     const rec = { date: d, sent: exists(path.join(ctx.stateDir, `sent-${d}`)), pending: exists(path.join(ctx.stateDir, `pending-${d}`)), sentAt: '', engine: '', tests: 0, fails: [], skipped: 0, beforeInstall: installed && d < installed };
@@ -255,7 +254,7 @@ export function overview(ctx) {
   return {
     now: new Date().toISOString(), home: ctx.home.replace(os.homedir(), '~'), level, checks, running,
     today: { date: today.date, state: today.state, sentAt: today.sentAt, engine: today.engine, alerts },
-    nextRun: sched.loaded || ctx.opts.skipLaunchctl ? nextRun(sched.slots, today.state, ctx.opts.now ? new Date(ctx.opts.now) : new Date()) : null, schedule: sched, tz, engine, build, deployed, n8nVersion: n8nVer,
+    nextRun: nextRun(sched.slots, today.state, ctx.opts.now ? new Date(ctx.opts.now) : new Date()), schedule: sched, tz, engine, build, deployed, n8nVersion: n8nVer,
     lastRun: lastRun ? { ...lastRun, reason: ctx.clean(lastRun.reason) } : null, history: hist, dbSize, consoleOutdated: !!(ctx.outdated && ctx.outdated()),
     setup: { needed: !values.DISCORD_WEBHOOK_URL, discord: !!values.DISCORD_WEBHOOK_URL, calendar: !!values.ICS_URLS, ai: !!(values.AI_BASE_URL && values.AI_MODEL), sysTz },
   };
@@ -282,7 +281,6 @@ export function saveSettings(ctx, changes) {
   }
   if (Object.keys(errs).length) return { ok: false, fieldErrors: errs };
   const before = ctx.readCfg();
-  if (before === null) return { ok: false, fieldErrors: { _: '设置文件读不出来（权限不对？），什么都没有改。' } };
   if (before) writePrivate(`${ctx.cfgFile}.bak`, before);
   writePrivate(ctx.cfgFile, applyConfigChanges(before, clean));
   return { ok: true, saved: Object.keys(clean), notes: Object.fromEntries(Object.entries(clean).map(([k, v]) => [k, settingNotes(k, v)]).filter(([, n]) => n)) };
@@ -418,15 +416,7 @@ export function inboxText(ctx, name) {
     const hash = crypto.createHash('sha256').update(buf).digest('hex');
     const cache = path.join(ctx.stateDir, 'extracted', `${hash}.txt`);
     if (exists(cache)) text = fs.readFileSync(cache, 'utf8');
-    else {
-      const errFile = path.join(ctx.stateDir, 'extracted', `${hash}.err`);
-      if (exists(errFile)) {
-        let e = { n: 1, msg: '' }; try { e = JSON.parse(fs.readFileSync(errFile, 'utf8')); } catch { /* plain text */ }
-        const why = ctx.clean(String(e.msg || '')).slice(0, 160);
-        return { status: 200, body: { name, ready: false, note: e.n >= 5 ? `文字提取失败了 ${e.n} 次，已放弃：${why}\n修好文件后点「重试」。扫描件（图片 PDF）和加密 PDF 读不出文字。` : `文字提取失败（第 ${e.n} 次）：${why}\n6 小时后会自动再试，也可以点「重试」。` } };
-      }
-      return { status: 200, body: { name, ready: false, note: '文字还没有提取：下一次运行开始前会自动提取。' } };
-    }
+    else return { status: 200, body: { name, ready: false, note: '文字还没有提取：下一次运行开始前会自动提取。' } };
   } else return { status: 200, body: { name, ready: false, note: '这种格式不会被读取。' } };
   return { status: 200, body: { name, ready: true, length: text.length, text: text.slice(0, 6000), more: Math.max(0, text.length - 6000) } };
 }
@@ -454,7 +444,6 @@ export function makeJobs(ctx) {
     const def = JOBS[kind];
     if (!def) return { status: 400, body: { error: '未知的操作' } };
     if (current && current.state === 'running') return { status: 409, body: { error: `「${current.label}」还在进行，请稍等` } };
-    if (kind === 'schedule' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(param || ''))) return { status: 400, body: { error: '时间应为 HH:MM（24 小时制）' } };
     const job = { id: ++seq, kind, label: def.label, state: 'running', startedAt: Date.now(), output: '', code: null };
     current = job;
     // The output is cleaned as a WHOLE every time, never piece by piece: a secret split across two chunks of a stream would
@@ -468,7 +457,7 @@ export function makeJobs(ctx) {
     const lines = []; const tails = { out: '', err: '' };
     const secretsAll = () => [...new Set([...ctx.secretsNow(), ...startSecrets])];
     const maskTail = (t) => {
-      for (const sec of secretsAll()) { const pub = (/^https?:\/\/[^/]+\//.exec(sec) || [''])[0].length; for (let k = Math.min(sec.length - 1, t.length); k >= Math.max(4, pub + 1); k--) if (t.endsWith(sec.slice(0, k))) return `${t.slice(0, -k)}<密钥…>`; }
+      for (const sec of secretsAll()) for (let k = Math.min(sec.length - 1, t.length); k >= 4; k--) if (t.endsWith(sec.slice(0, k))) return `${t.slice(0, -k)}<密钥…>`;
       return t;
     };
     const publish = (final) => {
@@ -490,7 +479,7 @@ export function makeJobs(ctx) {
       return { status: 200, body: job };
     }
     const args = [...def.args];
-    if (kind === 'schedule') args.push(param);
+    if (kind === 'schedule') { if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(param || ''))) { current = null; return { status: 400, body: { error: '时间应为 HH:MM（24 小时制）' } }; } args.push(param); }
     const child = spawn('/bin/bash', [path.join(ctx.scriptsDir, args[0]), ...args.slice(1)], { env: ctx.childEnv(), cwd: ctx.home });
     // decode as streams: a multi-byte character split between two chunks must not turn into garbage
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
@@ -571,11 +560,11 @@ export async function listModels(ctx, { base, key, useSaved } = {}) {
   try {
     const r = await fetch(`${b.replace(/\/$/, '')}/models`, { headers: k ? { Authorization: `Bearer ${k}` } : {}, signal: AbortSignal.timeout(20000) });
     if (r.status === 401 || r.status === 403) return { ok: false, message: '密钥不对或已失效：请到服务商网站重新复制。' };
-    if (r.status === 404) return { ok: false, manual: true, message: '这个地址没有模型列表：接口地址可能不对（通常以 /v1 结尾，DeepSeek 是 https://api.deepseek.com）。如果地址确实没错，可以在下面手动填模型名。' };
+    if (r.status === 404) return { ok: false, message: '这个地址没有模型列表：接口地址可能不对（通常以 /v1 结尾，DeepSeek 是 https://api.deepseek.com）。' };
     if (!r.ok) return { ok: false, message: `服务返回 HTTP ${r.status}，稍后再试。` };
     const ids = (((await r.json().catch(() => ({}))).data) || []).map((m) => String(m?.id || '')).filter((id) => id && id.length < 120);
     const models = [...new Set(ids.filter((id) => !NOT_CHAT.test(id)))].sort();
-    if (!models.length) return { ok: false, manual: true, message: '连上了，但没有找到可以用的对话模型。可以在下面手动填模型名。' };
+    if (!models.length) return { ok: false, message: '连上了，但没有找到可以用的对话模型。' };
     const suggested = models.find((m) => m === 'deepseek-chat') || models.find((m) => !/reason|r1|o1|o3|think/i.test(m)) || models[0];
     return { ok: true, models, suggested };
   } catch (e) { return { ok: false, message: `连不上这个地址（${e.cause?.code || e.name}）：检查地址和网络。` }; }
@@ -598,13 +587,10 @@ export function createServer(ctx, { token, port }) {
     res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'", ...extra });
     res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   };
-  const readBody = (req, limit, what = '请求') => new Promise((resolve, reject) => {
-    const tooBig = Object.assign(new Error(`${what}超过 ${Math.round(limit / 1e6)} MB`), { status: 413 });
-    if (Number(req.headers['content-length']) > limit) { req.resume(); return reject(tooBig); }
-    const chunks = []; let n = 0; let over = false;
-    // the rest of the body is drained, not cut off: destroying the socket would lose the 413 answer on the way to the page
-    req.on('data', (c) => { if (over) return; n += c.length; if (n > limit) { over = true; chunks.length = 0; reject(tooBig); } else chunks.push(c); });
-    req.on('end', () => { if (!over) resolve(Buffer.concat(chunks)); }); req.on('error', reject);
+  const readBody = (req, limit) => new Promise((resolve, reject) => {
+    const chunks = []; let n = 0;
+    req.on('data', (c) => { n += c.length; if (n > limit) { reject(Object.assign(new Error('too large'), { status: 413 })); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks))); req.on('error', reject);
   });
   const cookieToken = (req) => (/(?:^|;\s*)brief_console=([0-9a-f]+)/.exec(req.headers.cookie || '') || [])[1] || '';
   const same = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -645,12 +631,12 @@ export function createServer(ctx, { token, port }) {
         case 'GET /api/inbox': return send(res, 200, inboxView(ctx));
         case 'POST /api/inbox/action': {
           const { action, name, full } = await json();
-          if (!['retry', 'ignore', 'unignore', 'remove'].includes(action) || typeof name !== 'string' || !name || name.includes('/') || name !== path.basename(name)) return send(res, 400, { error: '文件名不合法' });
+          if (!['retry', 'ignore', 'unignore', 'remove'].includes(action) || typeof name !== 'string' || !name || name.includes('/') || name.startsWith('-')) return send(res, 400, { error: 'bad request' });
           const r = runTool(ctx, [action, name, ...(action === 'retry' && full ? ['--full'] : [])]);
           if (r.status === 3) return send(res, 409, { error: '简报正在运行，请一两分钟后再试' });
           return send(res, r.status === 0 ? 200 : 400, { ok: r.status === 0, message: ctx.clean((r.stdout || r.stderr).trim()), ...inboxView(ctx) });
         }
-        case 'POST /api/inbox/upload': { const r = saveUpload(ctx, decodeURIComponent(String(req.headers['x-file-name'] || '')), await readBody(req, 30_000_000, '文件')); return send(res, r.status, r.body); }
+        case 'POST /api/inbox/upload': { const r = saveUpload(ctx, decodeURIComponent(String(req.headers['x-file-name'] || '')), await readBody(req, 30_000_000)); return send(res, r.status, r.body); }
         case 'GET /api/logs': return send(res, 200, logsView(ctx, url.searchParams.get('which'), url.searchParams.get('date')));
         case 'POST /api/jobs': { const { kind, param } = await json(); const r = jobs.start(kind, param); return send(res, r.status, r.body); }
         case 'GET /api/jobs/current': return send(res, 200, jobs.get() || {});

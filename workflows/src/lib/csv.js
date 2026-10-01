@@ -40,16 +40,8 @@ function parseCsv(text) {
 // Accepts what people and spreadsheets write: 2026-10-02, 2026/10/2, 2026.10.2 (optionally followed by a time).
 // Returns YYYY-MM-DD, or '' when it is not a real calendar date.
 function normalizeDate(s) {
-  const str = String(s ?? '').trim();
-  let m = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T].*)?$/);
-  if (!m) {
-    // Excel saves 25/12/2026 (D/M, Hong Kong, UK) or 12/25/2026 (M/D, US). Only the unambiguous ones are accepted:
-    // 3/4/2026 could be either, and a wrong guess is worse than the "unrecognised date" note the brief gives.
-    const dm = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:[ T].*)?$/);
-    if (!dm) return '';
-    const a = Number(dm[1]), b = Number(dm[2]);
-    if (a > 12 && b <= 12) m = [str, dm[3], dm[2], dm[1]]; else if (b > 12 && a <= 12) m = [str, dm[3], dm[1], dm[2]]; else return '';
-  }
+  const m = String(s ?? '').trim().match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T].*)?$/);
+  if (!m) return '';
   const iso = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
   const d = new Date(`${iso}T00:00:00Z`);
   return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso ? '' : iso;

@@ -479,8 +479,3 @@ test('when the direct engine fails, its own reason reaches the alert and the run
   const sb = sandbox(); const r = run(sb, 'ok', { BRIEF_ENGINE: 'direct', STUB_DIRECT: 'notsent' });
   assert.match(r.log, /FAIL: 直连模式发送失败（Discord: 404 Unknown Webhook）/); assert.match(r.lastRun.reason, /Discord: 404/);
 });
-
-test('--test while another process holds the lock fails loudly (exit 75, a message) instead of exiting 0 as if sent', async () => {
-  const sb = sandbox(); const holder = await holdLock(sb.state, 'console');
-  try { const r = run(sb, 'ok', {}, ['--test']); assert.equal(r.status, 75); assert.match(r.stderr, /另一个进程在运行/); assert.equal(r.posts, 0); } finally { await holder.release(); }
-});

@@ -490,16 +490,3 @@ test('extract-inbox: the text of a document that left the inbox is deleted once 
   assert.ok(left.has(f.notOurs), 'only cache files are touched');
   assert.ok(!left.has(f.goneOld) && !left.has(f.goneOldErr), 'the old text of a removed document is gone');
 });
-
-test('a new version of a document already read: the AI is told what is recorded, look-alike rows are flagged, new ones are not', async () => {
-  const { inbox, env } = setup({ 'syllabus.pdf.txt': TEXT });
-  await runNode('ingest-files.js', { env, nodes, http: ai([[{ category: 'STAT3612', title: 'Assignment 1', due: '2026-10-09' }, { category: 'STAT3612', title: 'Mid-term quiz', due: '2026-10-21' }]]) });
-  fs.writeFileSync(path.join(inbox, 'syllabus.pdf.txt'), TEXT + 'version 2 with the final exam added'); // same name, new bytes
-  const http = ai([[{ category: 'STAT3612', title: 'Assignment 1 submission (Python)', due: '2026-10-09' }, { category: 'STAT3612', title: 'Final exam', due: '2026-12-01' }]]);
-  const r = await runNode('ingest-files.js', { env, nodes, http });
-  const prompt = http.bodies[0].messages[1].content;
-  assert.match(prompt, /NEW VERSION of a document/); assert.match(prompt, /Assignment 1 \| 2026-10-09/); assert.match(prompt, /Mid-term quiz \| 2026-10-21/);
-  const rows = readCsv(inbox); assert.equal(rows.length, 4); assert.equal(r.ingest.newTasks, 2);
-  assert.match(rows[2], /Assignment 1 submission/); assert.match(rows[2], /文件有新版本：可能是「Assignment 1」的更新/); assert.match(rows[2], /^待确认/);
-  assert.match(rows[3], /Final exam/); assert.doesNotMatch(rows[3], /新版本/);
-});

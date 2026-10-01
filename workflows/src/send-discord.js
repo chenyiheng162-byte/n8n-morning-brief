@@ -48,10 +48,7 @@ for (let attempt = 0; ; attempt++) {
   } catch (e) {
     const code = httpCode(e);
     const neverSent = NEVER_SENT.test(errCode(e));
-    // 502/503 (Cloudflare "bad gateway" / "service unavailable", frequent for a few seconds at a time) means the request
-    // was not taken: without a retry the whole day's automation stops on it. 500 and 504 may have been processed: unknown.
-    const notTaken = code === 502 || code === 503;
-    if (attempt < 2 && (code === 429 || neverSent || notTaken)) { await sleep(Math.max(retryAfter(e) * 1000, 3000) * (notTaken ? attempt + 1 : 1)); continue; }
+    if (attempt < 2 && (code === 429 || neverSent)) { await sleep(Math.max(retryAfter(e) * 1000, 3000)); continue; }
     if (code === 429 || (code >= 400 && code < 500) || neverSent) return out('not_sent', { reason: `Discord: ${code || errCode(e)} ${safe(e.message)}` });
     return out('unknown', { reason: `Discord: ${code || errCode(e) || 'no answer'} ${safe(e.message)}` });
   }

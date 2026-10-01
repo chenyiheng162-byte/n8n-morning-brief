@@ -58,13 +58,13 @@ alert() {
   [ -n "${DISCORD_WEBHOOK_URL:-}" ] || return 0
   local n; n="$(cat "$STATE_DIR/alerts-$TODAY" 2>/dev/null || echo 0)"
   [ "$n" -lt 2 ] || return 0
+  echo $((n + 1)) > "$STATE_DIR/alerts-$TODAY"
   local code
   # (an alert can quote a file name or a server's answer: allowed_mentions keeps an "@everyone" in it from pinging anyone)
   code="$(printf 'url = "%s"\n' "$DISCORD_WEBHOOK_URL" | curl -s -o /dev/null -m 15 -w '%{http_code}' -K - \
     -H 'Content-Type: application/json' -X POST \
     --data "$(printf '{"content":"⚠️ 每日简报：%s","allowed_mentions":{"parse":[]}}' "$(json_escape "$1")")" 2>/dev/null)" || true
-  # counted only once delivered: an alert that could not leave an offline Mac must not use up the budget for the one that can
-  case "$code" in 2??) echo $((n + 1)) > "$STATE_DIR/alerts-$TODAY" ;; *) log "alert to Discord failed (HTTP ${code:-none})"; notify_local "Discord 报警也没有发出去，请检查 Webhook 是否还有效" ;; esac
+  case "$code" in 2??) ;; *) log "alert to Discord failed (HTTP ${code:-none})"; notify_local "Discord 报警也没有发出去，请检查 Webhook 是否还有效" ;; esac
 }
 
 # A JSON string body: line breaks and tabs become spaces, other control characters (invalid in JSON) are dropped.
@@ -159,10 +159,7 @@ lock_take "$LOCK" run-brief; rc=$?
 case "$rc" in
   0) HAVE_LOCK=1 ;;
   2) fail "无法取得运行锁（状态目录 $STATE_DIR 不可写？或者系统缺少 /usr/bin/lockf）" ;;
-  *) log "the lock is held by another process of this project (${LOCK_HOLDER:-unknown}: a run, a deployment, the inbox tool or the console), exiting"
-     # a scheduled run can simply yield (the next slot tries again); a run someone asked for must not look like a success
-     if [ "$MODE" != normal ]; then FAILED=1; REASON="lock held by ${LOCK_HOLDER:-unknown}"; echo "现在有另一个进程在运行（${LOCK_HOLDER:-unknown}：早上的运行、部署、收件箱工具或控制台），这次没有发送。请一两分钟后再试。" >&2; exit 75; fi
-     exit 0 ;;
+  *) log "the lock is held by another process of this project (${LOCK_HOLDER:-unknown}: a run, a deployment, the inbox tool or the console), exiting"; exit 0 ;;
 esac
 kill_orphan_n8n
 

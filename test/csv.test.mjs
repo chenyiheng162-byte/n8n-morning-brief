@@ -12,9 +12,7 @@ const { normalizeDate, readTasks, writeTasks, TASK_COLUMNS } = ctx.api;
 
 test('dates: accepts the formats Excel and people write, rejects impossible dates', () => {
   for (const [input, want] of [['2026-10-02', '2026-10-02'], ['2026/10/2', '2026-10-02'], ['2026.10.2', '2026-10-02'], ['2026-1-5', '2026-01-05'],
-    ['2026/10/2 09:00', '2026-10-02'], [' 2026-10-02 ', '2026-10-02'], ['2026-13-01', ''], ['2026-02-30', ''], ['10/2/2026', ''], ['', ''], [undefined, ''],
-    // Excel in other locales: day-first or month-first, accepted only when the order cannot be mistaken
-    ['25/12/2026', '2026-12-25'], ['12/25/2026', '2026-12-25'], ['14/10/2026 09:00', '2026-10-14'], ['3/4/2026', ''], ['31/02/2026', ''], ['13/13/2026', '']]) {
+    ['2026/10/2 09:00', '2026-10-02'], [' 2026-10-02 ', '2026-10-02'], ['2026-13-01', ''], ['2026-02-30', ''], ['10/2/2026', ''], ['', ''], [undefined, '']]) {
     assert.equal(normalizeDate(input), want, `normalizeDate(${JSON.stringify(input)})`);
   }
 });
