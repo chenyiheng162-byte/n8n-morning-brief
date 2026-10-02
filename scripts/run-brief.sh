@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Delivers the morning brief: start n8n -> trigger the workflow once -> stop n8n (with a direct fallback).
 #
-# Usage: run-brief.sh [--test | --force | --dry-run]
+# Usage: run-brief.sh [--test | --force | --dry-run | --ingest]
 #   (no option)  the scheduled run: skipped when today's brief was already sent; records delivery in state markers
 #   --test       send a brief NOW, labelled "测试", ignoring and NOT writing any markers (safe at any time of day)
 #   --force      send a brief NOW without the label, ignoring and NOT writing any markers
 #   --dry-run    build the brief and print it; sends nothing, calls no AI, writes nothing (does not start n8n)
+#   --ingest     read the inbox now (PDF/DOCX text, AI, tasks.csv) under the run lock; sends nothing, writes no markers,
+#                does not start n8n (the console's 「现在读取」)
 # Only the scheduled run writes markers, so a manual check can never cancel the real morning brief.
 #
 # Tuning (mainly for tests): BRIEF_READY_TIMEOUT (120s to wait for n8n), BRIEF_EXEC_TIMEOUT (1200s for one accepted run),
@@ -18,8 +20,8 @@ cd "$BRIEF_HOME" || exit 1
 
 MODE=normal
 case "${1:-}" in
-  '') ;; --test) MODE=test ;; --force) MODE=force ;; --dry-run) MODE=dry ;;
-  -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+  '') ;; --test) MODE=test ;; --force) MODE=force ;; --dry-run) MODE=dry ;; --ingest) MODE=ingest ;;
+  -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
   *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
 esac
 TODAY="$(date +%F)"
@@ -72,7 +74,7 @@ json_escape() { printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '\000-\037' | sed '
 num_of() { printf '%s' "$BODY" | sed -n "s/.*\"$1\":\([0-9][0-9]*\).*/\1/p" | head -1; }
 # One small machine-readable record of the latest run, for scripts/status.sh.
 write_last_run() {
-  [ "$MODE" = dry ] && return 0
+  case "$MODE" in dry|ingest) return 0 ;; esac   # not a delivery: the record of the last delivery stays
   [ "$HAVE_LOCK" = 1 ] || return 0   # a process that did not get the lock must not overwrite the record of the one that has it
   local ended; ended="$(date +%s)"
   printf '{"run":"%s","mode":"%s","result":"%s","reason":"%s","engine":"%s","date":"%s","started":%s,"seconds":%s,"missedDays":"%s","events":%s,"tasks":%s,"newTasks":%s,"aiCalls":%s,"calendarMs":%s,"ingestMs":%s,"waitNetSec":%s,"waitReadySec":%s,"execSec":%s}\n' \
@@ -106,7 +108,7 @@ cleanup() {
   local rc=$?
   # a request that is still in flight must not outlive us
   if [ -n "$CHILD_PID" ]; then pkill -P "$CHILD_PID" 2>/dev/null; kill "$CHILD_PID" 2>/dev/null; fi
-  rm -f "$STATE_DIR"/resp.$$ "$STATE_DIR"/direct.$$ "$STATE_DIR"/direct.err.$$ "$ATTEMPT" 2>/dev/null   # the attempt record has been read by now
+  rm -f "$STATE_DIR"/resp.$$ "$STATE_DIR"/direct.$$ "$STATE_DIR"/direct.err.$$ "$STATE_DIR"/ingest.$$ "$ATTEMPT" 2>/dev/null   # the attempt record has been read by now
   if [ "$rc" -ne 0 ] && [ "$FAILED" = 0 ]; then
     case "$rc" in
       143|130|129) REASON="interrupted by a signal"; log "interrupted by a signal (launchd stop, logout, shutdown or Ctrl-C)" ;;
@@ -132,7 +134,7 @@ fi
 # ---------- settings problems are visible, not silent ----------
 [ -z "${BRIEF_CONFIG_ERRORS:-}" ] || log "WARN: config.local.env: line(s) ${BRIEF_CONFIG_ERRORS} were not understood and skipped (expected KEY='value')"
 [ -z "${BRIEF_TZ_INVALID:-}" ] || log "WARN: BRIEF_TZ '${BRIEF_TZ_INVALID}' is not a valid timezone; using ${BRIEF_TZ}"
-[ -n "${DISCORD_WEBHOOK_URL:-}" ] || fail "settings 里没有可用的 DISCORD_WEBHOOK_URL"
+[ "$MODE" = ingest ] || [ -n "${DISCORD_WEBHOOK_URL:-}" ] || fail "settings 里没有可用的 DISCORD_WEBHOOK_URL"
 
 # ---------- single-instance lock ----------
 # An operating-system file lock held by a guard process (scripts/lock.sh): it is released by the system as soon as the run
@@ -159,7 +161,10 @@ lock_take "$LOCK" run-brief; rc=$?
 case "$rc" in
   0) HAVE_LOCK=1 ;;
   2) fail "无法取得运行锁（状态目录 $STATE_DIR 不可写？或者系统缺少 /usr/bin/lockf）" ;;
-  *) log "the lock is held by another process of this project (${LOCK_HOLDER:-unknown}: a run, a deployment, the inbox tool or the console), exiting"; exit 0 ;;
+  *) log "the lock is held by another process of this project (${LOCK_HOLDER:-unknown}: a run, a deployment, the inbox tool or the console), exiting"
+     # the scheduled run simply leaves it to its next slot; a manual action is told that nothing happened, and why
+     if [ "$MODE" != normal ]; then echo "现在有另一项操作在进行（一次运行、部署或控制台的保存），这次没有执行：请一两分钟后再试。"; FAILED=1; exit 1; fi
+     exit 0 ;;
 esac
 kill_orphan_n8n
 
@@ -200,6 +205,19 @@ MISSED_ARG=""; [ -n "$MISSED_DAYS" ] && MISSED_ARG="--missed=$(printf '%s' "${MI
 
 # Keep the Mac awake for the duration of this script (display may stay off).
 command -v caffeinate >/dev/null 2>&1 && { caffeinate -i -w $$ >/dev/null 2>&1 & }
+
+# ---------- read the inbox now (--ingest): the ingest step only, under the lock; no n8n, no Discord, no markers ----------
+if [ "$MODE" = ingest ]; then
+  log "reading the inbox now (--ingest)"
+  node "$BRIEF_HOME/scripts/extract-inbox.mjs" > "$STATE_DIR/ingest.$$" 2>&1; cat "$STATE_DIR/ingest.$$"; cat "$STATE_DIR/ingest.$$" >> "$LOG"
+  # (background + wait, as below: a stop signal is handled at once)
+  node "$BRIEF_HOME/scripts/brief.mjs" --ingest > "$STATE_DIR/ingest.$$" 2>&1 &
+  CHILD_PID=$!; wait "$CHILD_PID"; rc=$?; CHILD_PID=""
+  cat "$STATE_DIR/ingest.$$"; cat "$STATE_DIR/ingest.$$" >> "$LOG"; rm -f "$STATE_DIR/ingest.$$"
+  # a manual action that failed is shown where it was started; it is not a failed brief (no alert, no FAIL line in the history)
+  if [ "$rc" = 0 ]; then RESULT=ok; REASON="inbox read"; log "OK: inbox read (--ingest)"; exit 0; fi
+  FAILED=1; REASON="inbox read failed"; log "ERROR: reading the inbox failed (exit code ${rc})"; exit 1
+fi
 
 # After waking from sleep the network can take a while to come back: wait for Discord, with a hard deadline. 60 seconds
 # normally; 180 when the Mac woke up less than five minutes ago (on 2026-10-01 the network needed about 100 seconds after

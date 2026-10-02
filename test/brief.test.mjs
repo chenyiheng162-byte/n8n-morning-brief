@@ -287,3 +287,24 @@ test('a long BRIEF_NOTE is shortened with … and never ends in half an escape',
     assert.ok(line.length <= 240, `${n}: ${line.length}`); assert.ok(line.endsWith('…'), String(n)); assert.doesNotMatch(line, /\\…$/, String(n));
   }
 });
+
+test('learning milestones get their own line: never an overdue task, never the card colour, and pending ones are counted apart', async () => {
+  const f = path.join(tmpdir(), 'tasks.csv'); // today = 2026-09-30 (Wednesday)
+  fs.writeFileSync(f, `﻿${HEAD},类型\r\n${[
+    '进行中,STAT3612,Classification,2026-10-02,,s.pdf,2026-09-01,第5周,里程碑',
+    '进行中,STAT3612,Regression,2026-09-29,,s.pdf,2026-09-01,第4周,里程碑',
+    '进行中,STAT3612,Intro,2026-09-20,,s.pdf,2026-09-01,第3周,里程碑',
+    '进行中,STAT3612,Far topic,2026-11-20,,s.pdf,2026-09-01,,里程碑',
+    '待确认,STAT3612,Clustering,2026-10-20,,s.pdf,2026-09-01,,里程碑',
+    '进行中,STAT3612,Assignment 2,2026-10-09,,s.pdf,2026-09-01,,'].join('\r\n')}\r\n`);
+  const r = await brief({ ...cal(), tasksFile: f });
+  const t = text(r);
+  assert.match(t, /📚 学习进度：Regression（STAT3612 · 已过 1 天）、Classification（STAT3612 · 周五前）\n/);
+  assert.match(t, /📚 另有 1 个学习目标已经过了：学完的请在任务页改成「完成」/);
+  assert.doesNotMatch(t, /🔴|逾期|Far topic/, 'a slipped learning target is not an overdue task, and next month\'s is not shown yet');
+  assert.match(t, /🆕 1 个学习里程碑待确认（在控制台的「任务」页确认/); assert.doesNotMatch(t, /\n　• Clustering/);
+  assert.equal(r.taskCount, 1, 'only the real task counts as a task');
+  assert.equal(r.payload.embeds[0].color, 0x2ecc71, 'the card colour follows the tasks only: Assignment 2 is 9 days away, so green, whatever the milestones');
+  const full = text(await brief({ ...cal(), tasksFile: f }, { BRIEF_VIEW: 'full' }));
+  assert.match(full, /【📚 学习进度（2）】\n📚 \*\*Regression\*\* · 已过 1 天 · _STAT3612_\n📚 \*\*Classification\*\* · 周五前 · _STAT3612_/);
+});

@@ -391,3 +391,12 @@ test('deploy: an OLD-version process holding the old lock stops the deploy befor
   try { const r = deploy(sb); assert.notEqual(r.status, 0); assert.match(r.stderr, /in progress.*old version/); assert.equal(sql(sb.db, 'select versionId from workflow_entity;'), 'v-old'); assert.equal(fs.existsSync(path.join(sb.home, 'data', 'backups')) ? fs.readdirSync(path.join(sb.home, 'data', 'backups')).length : 0, 0, 'not even a backup'); }
   finally { old.kill(); }
 });
+
+test('direct engine: "read the inbox now" only ingests: tasks and milestones are written, nothing is sent, the calendar is not fetched', async () => {
+  const log = []; const env = engineEnv({ BRIEF_BASE_DATE: '2026-08-31' }); fs.writeFileSync(path.join(env.BRIEF_INBOX, 'syl.txt'), 'A course document with enough readable text to be processed.\n');
+  const reply = { tasks: [{ category: 'STAT3612', title: 'Assignment 2', due: '2026-10-29' }], milestones: [{ category: 'STAT3612', topic: 'Classification', week: 6 }] };
+  const r = await runBrief({ env, ingestOnly: true, fetchImpl: router(log, { ai: async () => ({ choices: [{ message: { content: JSON.stringify(reply) } }] }) }) });
+  assert.equal(r.status, 'ingested'); assert.equal(r.newTasks, 1); assert.equal(r.newMilestones, 1); assert.equal(r.files, 1);
+  assert.deepEqual(log.map((l) => new URL(l.url).host), ['ai.example'], 'only the AI is called: no calendar, no Discord');
+  assert.match(fs.readFileSync(path.join(env.BRIEF_INBOX, 'tasks.csv'), 'utf8'), /Classification,2026-10-11,.*里程碑/);
+});

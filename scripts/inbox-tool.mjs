@@ -55,7 +55,7 @@ function describe(name) {
     return { ...info, state: e.n >= MAX_EXTRACT_ATTEMPTS ? 'gave-up' : 'waiting-extraction', detail: `文字提取失败（第 ${e.n} 次）：${String(e.msg || '').slice(0, 80)}` };
   }
   if (seen.partial[hash]) return { ...info, state: 'partial', detail: `读到第 ${seen.partial[hash]} 段，下一次运行接着读`, truncated: !!seen.truncated[hash] };
-  return { ...info, state: 'new', detail: fails ? `上次失败 ${fails} 次` : '等待处理' };
+  return { ...info, state: 'new', detail: fails ? `上次失败 ${fails} 次` : '下一次运行时读取（或在控制台的收件箱里点「现在读取」）' };
 }
 
 // Changing commands take the same lock as a run, so a retry or ignore can never be overwritten by a run that started

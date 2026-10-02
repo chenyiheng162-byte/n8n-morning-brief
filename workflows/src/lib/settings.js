@@ -31,6 +31,7 @@ function loadSettings($env) {
     ingestBudgetMs: num('BRIEF_INGEST_BUDGET_MS', 150000, 1, 500000, 20000),
     chunkChars: num('BRIEF_CHUNK_CHARS', 24000, 4000, 60000),
     autoConfirm: /^(1|true|yes)$/i.test(String($env.BRIEF_AUTO_CONFIRM || '')),
+    milestones: !/^(0|false|no|off)$/i.test(String($env.BRIEF_MILESTONES || '')), // learning milestones from syllabi: on unless turned off
     ignore: regex('BRIEF_IGNORE', 'i'),
     strip: regex('BRIEF_STRIP', 'gi'),
     test: !!$env.BRIEF_TEST,

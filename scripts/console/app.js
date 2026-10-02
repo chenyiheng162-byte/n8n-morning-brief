@@ -436,11 +436,13 @@ async function viewTasks(view) {
     return h('span', { class: 'selwrap' }, sel, icon('chevron-right'));
   }
   const inp = (r, k, type = 'text', ph = '') => h('input', { type, placeholder: ph, 'aria-label': k, value: type === 'date' ? (/^\d{4}-\d{2}-\d{2}$/.test(valueOf(r, k)) ? valueOf(r, k) : '') : valueOf(r, k), oninput: (e) => { setField(r, k, e.target.value); e.target.closest('tr').classList.toggle('dirty', changes.has(r._i)); } });
-  function dueBadge(d) { const rd = relDay(d); if (!rd) return ''; const cls = rd.startsWith('逾期') ? 't-bad' : (rd === '今天' || rd === '明天') ? 't-warn' : 't-gray'; return h('span', { class: `due badge ${cls}` }, rd); }
+  // a learning milestone (类型 = 里程碑) is a target, not a deadline: once its day has passed it is "已过", in grey, never a red 逾期
+  const isGoal = (r) => r['类型'] === '里程碑';
+  function dueBadge(d, goal = false) { const rd = relDay(d); if (!rd) return ''; if (goal && rd.startsWith('逾期')) return h('span', { class: 'due badge t-gray' }, rd.replace('逾期', '已过')); const cls = rd.startsWith('逾期') ? 't-bad' : (rd === '今天' || rd === '明天') ? 't-warn' : 't-gray'; return h('span', { class: `due badge ${cls}` }, rd); }
   function drawAll() {
     const c = counts();
     segHost.replaceChildren(h('div', { class: 'seg', role: 'tablist' }, [['active', '进行中'], ['pending', '待确认'], ['done', '完成'], ['ignored', '忽略'], ['all', '全部']].map(([k, l]) => h('button', { class: filter === k ? 'on' : '', role: 'tab', onclick: () => { filter = k; drawAll(); } }, l, h('small', {}, c[k] || 0)))));
-    const rows = data.rows.filter((r) => (filter === 'all' || kindOf(r) === filter) && (!q || `${r['任务']} ${r['分类']} ${r['备注']}`.toLowerCase().includes(q))).sort((a, b) => (valueOf(a, '截止日') || '9999').localeCompare(valueOf(b, '截止日') || '9999'));
+    const rows = data.rows.filter((r) => (filter === 'all' || kindOf(r) === filter) && (!q || `${r['任务']} ${r['分类']} ${r['备注']} ${r['类型'] || ''}`.toLowerCase().includes(q))).sort((a, b) => (valueOf(a, '截止日') || '9999').localeCompare(valueOf(b, '截止日') || '9999'));
     const f = { t: h('input', { type: 'text', placeholder: '任务名称（必填）' }), c: h('input', { type: 'text', placeholder: '分类' }), d: h('input', { type: 'date' }), n: h('input', { type: 'text', placeholder: '备注' }) };
     const addNow = () => { if (!f.t.value.trim()) { f.t.focus(); return toast('先写任务名称', 'bad'); } adds.push({ '状态': '进行中', '任务': f.t.value.trim(), '分类': f.c.value.trim(), '截止日': f.d.value, '备注': f.n.value.trim() }); adding = false; drawAll(); };
     f.t.addEventListener('keydown', (e) => { if (e.key === 'Enter') addNow(); if (e.key === 'Escape') { adding = false; drawAll(); } });
@@ -448,8 +450,8 @@ async function viewTasks(view) {
     const addRows = adds.map((a, i) => h('tr', { class: 'dirty' }, h('td', {}, h('span', { class: 'badge t-ok' }, a['状态'])), h('td', {}, a['任务']), h('td', {}, a['分类']), h('td', {}, a['截止日'], dueBadge(a['截止日'])), h('td', {}, a['备注']), h('td', {}, h('button', { class: 'btn sm ghost', onclick: () => { adds.splice(i, 1); drawAll(); } }, icon('x', 'sm'), '移除'))));
     const body = rows.map((r) => {
       const due = valueOf(r, '截止日'); const d = /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : r._due;
-      return h('tr', { class: changes.has(r._i) ? 'dirty' : '' }, h('td', {}, statusSel(r)), h('td', { style: 'min-width:220px' }, inp(r, '任务')), h('td', { style: 'min-width:120px' }, inp(r, '分类')),
-        h('td', { style: 'min-width:220px;white-space:nowrap' }, h('div', { style: 'display:flex;align-items:center' }, h('div', { style: 'width:150px' }, inp(r, '截止日', 'date')), d ? dueBadge(d) : (r['截止日'] && !r._due ? h('span', { class: 'due badge t-bad' }, `认不出：${r['截止日']}`) : ''))),
+      return h('tr', { class: changes.has(r._i) ? 'dirty' : '' }, h('td', {}, statusSel(r)), h('td', { style: 'min-width:220px' }, isGoal(r) ? h('div', { style: 'display:flex;align-items:center;gap:6px' }, h('span', { class: 'badge t-accent', title: '学习里程碑：这一天之前学完它。来自课程大纲，不是截止日' }, '里程碑'), inp(r, '任务')) : inp(r, '任务')), h('td', { style: 'min-width:120px' }, inp(r, '分类')),
+        h('td', { style: 'min-width:220px;white-space:nowrap' }, h('div', { style: 'display:flex;align-items:center' }, h('div', { style: 'width:150px' }, inp(r, '截止日', 'date')), d ? dueBadge(d, isGoal(r)) : (r['截止日'] && !r._due ? h('span', { class: 'due badge t-bad' }, `认不出：${r['截止日']}`) : ''))),
         h('td', { style: 'min-width:180px' }, inp(r, '备注', 'text', '—')), h('td', { class: 'faint small', style: 'white-space:nowrap' }, r['来源'] || ''));
     });
     const empty = !rows.length && !adds.length && !adding;
@@ -472,7 +474,7 @@ async function viewInbox(view) {
   const list = h('div', { class: 'files' }); const summary = h('div', { class: 'toolbar', style: 'margin:16px 0 0' });
   const input = h('input', { type: 'file', multiple: true, accept: '.pdf,.docx,.txt,.md', class: 'hidden', onchange: (e) => upload([...e.target.files]) });
   const drop = h('div', { class: 'drop', tabindex: 0, role: 'button', onclick: () => input.click(), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') input.click(); } },
-    h('div', { class: 'ico' }, icon('file-up', 'lg')), h('b', {}, '把文件拖到这里，或点一下选择'), h('div', { class: 'small' }, '课程大纲、作业说明、项目计划 · PDF、Word（docx）、txt、md · 下一次运行时 AI 会读它们'));
+    h('div', { class: 'ico' }, icon('file-up', 'lg')), h('b', {}, '把文件拖到这里，或点一下选择'), h('div', { class: 'small' }, '课程大纲、作业说明、项目计划 · PDF、Word（docx）、txt、md · 下一次运行时 AI 会读它们，也可以点「现在读取」'));
   for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
   for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); });
   drop.addEventListener('drop', (e) => upload([...e.dataTransfer.files]));
@@ -503,7 +505,9 @@ async function viewInbox(view) {
         h('div', { class: 'acts' }, acts));
     }) : [h('div', { class: 'card empty' }, h('div', { class: 'ico' }, icon('inbox', 'lg')), h('b', {}, '收件箱是空的'), h('div', { class: 'small' }, '放进来的文件会在下一次运行时被读取。'))]));
     const t = data.tasks || {};
-    summary.replaceChildren(t.error ? h('span', { class: 'badge t-bad' }, `任务表：${t.error}`) : h('span', { class: 'muted small' }, '任务表 · ', Object.entries({ active: '进行中', pending: '待确认', done: '完成', ignored: '忽略' }).map(([k, l]) => `${l} ${t[k] || 0}`).join(' · ')), h('span', { class: 'spacer' }), h('span', { class: 'faint small' }, `AI JSON 模式：${data.aiJsonMode === 'on' ? '开' : '关（服务商不支持）'}`));
+    const waiting = files.filter((f) => ['new', 'partial', 'failed', 'waiting-extraction'].includes(f.state)).length;
+    const readNow = h('button', { class: `btn sm${waiting ? ' sun' : ''}`, title: '现在就让 AI 读收件箱里的新文件，把找到的任务写进任务表（不发 Discord）', onclick: () => runJob('ingest') }, icon('sparkles', 'sm'), waiting ? `现在读取（${waiting} 个文件）` : '现在读取');
+    summary.replaceChildren(readNow, t.error ? h('span', { class: 'badge t-bad' }, `任务表：${t.error}`) : h('span', { class: 'muted small' }, '任务表 · ', Object.entries({ active: '进行中', pending: '待确认', done: '完成', ignored: '忽略' }).map(([k, l]) => `${l} ${t[k] || 0}`).join(' · ')), h('span', { class: 'spacer' }), h('span', { class: 'faint small' }, `AI JSON 模式：${data.aiJsonMode === 'on' ? '开' : '关（服务商不支持）'}`));
   }
   view.replaceChildren(drop, input, summary, list); draw();
 }
@@ -627,7 +631,7 @@ async function runJob(kind, param) {
   if (kind === 'force' && !(await confirmBox('补发今天的简报', '只在今天确实没收到时使用。补发不写「已发送」标记：如果今天的定时点还没跑完，之后可能会再收到一份。', '补发', true))) return;
   try { const j = await api('/api/jobs', { method: 'POST', body: { kind, param } }); showJob(j); poll(); } catch (e) { toast(e.message, 'bad'); }
 }
-function poll() { clearInterval(jobTimer); jobTimer = setInterval(async () => { try { const j = await api('/api/jobs/current'); showJob(j); if (j.state !== 'running') { clearInterval(jobTimer); toast(`${j.label}：${j.state === 'done' ? '完成' : '失败'}`, j.state === 'done' ? 'ok' : 'bad'); refreshOverview().then(() => { if (current === 'overview') viewOverview($('#view'), true); }); } } catch { clearInterval(jobTimer); } }, 1000); }
+function poll() { clearInterval(jobTimer); jobTimer = setInterval(async () => { try { const j = await api('/api/jobs/current'); showJob(j); if (j.state !== 'running') { clearInterval(jobTimer); toast(`${j.label}：${j.state === 'done' ? '完成' : '失败'}`, j.state === 'done' ? 'ok' : 'bad'); refreshOverview().then(() => { if (current === 'overview') viewOverview($('#view'), true); else if (['ingest', 'test', 'force'].includes(j.kind) && (current === 'inbox' || (current === 'tasks' && !(dirtyGuard && dirtyGuard())))) render(); }); } } catch { clearInterval(jobTimer); } }, 1000); }
 function renderBrief(text) {
   const lines = text.split('\n'); const box = h('div', { class: 'embed' });
   if (lines.length) { box.append(h('div', { style: 'font-weight:700;color:#f2f3f5;margin-bottom:6px' }, lines.shift())); while (lines.length && !lines[0].trim()) lines.shift(); }
@@ -679,6 +683,7 @@ function palette() {
     ...Object.entries(VIEWS).map(([k, [l, ic]]) => ({ grp: '跳转', label: `打开「${l}」`, ic, run: () => go(k) })),
     { grp: '操作', label: '预览今天的简报', ic: 'eye', run: () => runJob('preview') },
     { grp: '操作', label: '发送测试简报', ic: 'send', run: () => runJob('test') },
+    { grp: '操作', label: '现在读取收件箱', ic: 'sparkles', run: () => runJob('ingest') },
     { grp: '操作', label: '完整自检', ic: 'activity', run: () => runJob('status') },
     { grp: '操作', label: '测试 AI 连接', ic: 'sparkles', run: () => runJob('checkai') },
     { grp: '操作', label: '测试日历链接', ic: 'calendar-days', run: () => runJob('checkcal') },

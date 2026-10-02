@@ -72,6 +72,7 @@ export const FIELDS = [
   { key: 'BRIEF_AI_TIMEOUT_MS', group: 'AI', label: '单次请求超时（毫秒）', type: 'int', min: 10000, max: 600000, placeholder: '90000' },
   { key: 'BRIEF_BASE_DATE', group: '文件与任务', label: '第 1 周周一', type: 'date', help: '文件里写「第 N 周周 X」时用它换算日期。' },
   { key: 'BRIEF_AUTO_CONFIRM', group: '文件与任务', label: '日期明确的任务直接算「进行中」', type: 'bool', help: '默认关：AI 抽出的任务都先「待确认」。' },
+  { key: 'BRIEF_MILESTONES', group: '文件与任务', label: '学习里程碑', type: 'select', options: ['1', '0'], labels: ['从课程大纲提取（推荐）', '不要'], placeholder: '1', help: '课程大纲里有每周进度时，生成「某天前学完某章」的学习目标（也会在考核前一周提醒学完它考的内容）。按周排的大纲要先填「第 1 周周一」。' },
   { key: 'BRIEF_CHUNK_CHARS', group: '文件与任务', label: '每段字符数', type: 'int', min: 4000, max: 60000, placeholder: '24000' },
   { key: 'BRIEF_INGEST_BUDGET_MS', group: '文件与任务', label: '读文件的时间预算（毫秒）', type: 'int', min: 20000, max: 500000, placeholder: '150000' },
   { key: 'BRIEF_VIEW', group: '简报外观', label: '样式', type: 'select', options: ['compact', 'full'], labels: ['精简', '完整（多显示耗时）'], placeholder: 'compact' },
@@ -379,7 +380,8 @@ async function agendaCompute(ctx) {
   const t = tasksView(ctx);
   const today = fmtDay(new Date());
   const in7 = fmtDay(new Date(Date.now() + 7 * 86400000));
-  if (t.rows) out.deadlines = t.rows.filter((r) => r._kind === 'active' && r._due && r._due <= in7).sort((a, b) => a._due.localeCompare(b._due)).slice(0, 12).map((r) => ({ title: r['任务'], course: r['分类'], due: r._due, overdue: r._due < today }));
+  // (learning milestones, 类型 = 里程碑, are targets, not deadlines)
+  if (t.rows) out.deadlines = t.rows.filter((r) => r._kind === 'active' && r._due && r._due <= in7 && r['类型'] !== '里程碑').sort((a, b) => a._due.localeCompare(b._due)).slice(0, 12).map((r) => ({ title: r['任务'], course: r['分类'], due: r._due, overdue: r._due < today }));
   if (!v.ICS_URLS) return out;
   const src = srcDirOf(ctx);
   if (!src) return { ...out, calendar: 'error', error: '找不到日历读取代码' };
@@ -434,6 +436,7 @@ const JOBS = {
   force: { label: '补发今天的简报', args: ['run-brief.sh', '--force'] },
   status: { label: '完整自检', args: ['status.sh'] },
   schedule: { label: '修改发送时间', args: ['install-launchd.sh'] },
+  ingest: { label: '读取收件箱', args: ['run-brief.sh', '--ingest'] },
   checkai: { label: '测试 AI 连接', internal: true },
   checkcal: { label: '测试日历链接', internal: true },
   notify: { label: '测试本机通知', internal: true },

@@ -52,6 +52,7 @@ trap 'exit 0' TERM; env | grep -E '^BRIEF_TEST=' >> "$STUB_DIR/n8n.env"; echo $$
 const DIRECT = `import fs from 'node:fs';
 const d = process.env.STUB_DIR; fs.appendFileSync(d + '/direct.calls', process.argv.slice(2).join(' ') + '|note=' + (process.env.BRIEF_NOTE || '') + '\\n');
 if (process.argv.includes('--dry-run')) { console.log('DRY-RUN PREVIEW TEXT'); process.exit(0); }
+if (process.argv.includes('--ingest')) { console.log('读完 1 个文件：找到 2 条新任务'); process.exit(process.env.STUB_INGEST === 'fail' ? 1 : 0); }
 if (process.env.STUB_DIRECT === 'fail') { console.error('direct engine failed'); process.exit(1); }
 if (process.env.STUB_DIRECT === 'killed') { const run = (process.argv.find((a) => a.startsWith('--run=')) || '').slice(6); fs.writeFileSync(process.env.BRIEF_HOME + '/data/state/attempt-' + run, 'x'); process.kill(process.pid, 'SIGKILL'); }
 if (process.env.STUB_DIRECT === 'notsent') { console.error('brief.mjs failed: ' + (process.env.STUB_REASON || 'Discord: 404 Unknown Webhook')); process.exit(4); }
@@ -319,6 +320,16 @@ test('logs older than 30 days and a huge n8n log are cleaned up after a successf
   run(sb, 'ok'); assert.equal(fs.existsSync(oldLog), false); assert.ok(fs.statSync(path.join(sb.home, 'logs', 'n8n-run.log')).size <= 1048576 + 200);
 });
 
+test('--ingest reads the inbox under the lock: no n8n, nothing sent, no markers, no run record; a failure is not an alert', () => {
+  const sb = sandbox(); const r = run(sb, 'ok', {}, ['--ingest']);
+  assert.equal(r.status, 0, r.log); assert.match(r.stdout, /extract-inbox:/); assert.match(r.stdout, /读完 1 个文件/);
+  assert.equal(r.n8nStarted, false); assert.equal(r.posts, 0); assert.ok(!r.marker); assert.ok(!r.pending); assert.equal(r.alerts, 0);
+  assert.equal(r.lastRun, null, 'the record of the last delivery is not replaced'); assert.match(r.directCalls, /--ingest/); assert.match(r.log, /OK: inbox read/);
+  assert.equal(r.lockLeft, false);
+  const f = run(sb, 'ok', { STUB_INGEST: 'fail' }, ['--ingest']);
+  assert.equal(f.status, 1); assert.equal(f.alerts, 0, 'a manual action that failed is shown where it was started'); assert.doesNotMatch(f.log, /FAIL:/, 'and is not a failed brief in the history');
+});
+
 test('the direct engine tidies old logs and day markers too (it ends the script before the n8n part does)', () => {
   const sb = sandbox(); fs.mkdirSync(path.join(sb.home, 'logs'), { recursive: true }); fs.mkdirSync(sb.state, { recursive: true });
   const past = new Date(Date.now() - 40 * 86400000);
@@ -378,6 +389,16 @@ test('a process that did not get the lock leaves the record of the one that hold
   const sb = sandbox(); fs.mkdirSync(sb.state, { recursive: true }); fs.writeFileSync(path.join(sb.state, 'last-run.json'), '{"result":"ok","mode":"normal"}\n');
   const holder = await holdLock(sb.state);
   try { const r = run(sb, 'ok'); assert.equal(r.status, 0); assert.equal(read(path.join(sb.state, 'last-run.json')), '{"result":"ok","mode":"normal"}\n'); assert.ok(lockHeld(sb.state), 'and the holder keeps its lock'); } finally { await holder.release(); }
+});
+
+test('a manual run (--test, --force, --ingest) that meets a held lock says so and fails, instead of a silent "done"', async () => {
+  const sb = sandbox(); const holder = await holdLock(sb.state, 'run-brief');
+  try {
+    for (const mode of ['--test', '--force', '--ingest']) {
+      const r = run(sb, 'ok', {}, [mode]);
+      assert.equal(r.status, 1, mode); assert.match(r.stdout, /现在有另一项操作在进行/, mode); assert.equal(r.posts, 0); assert.equal(r.alerts, 0, 'no alert: it is told where it was started');
+    }
+  } finally { await holder.release(); }
 });
 
 // ================= shared lock (review R4-02, R8-01) =================

@@ -279,6 +279,16 @@ test('console: the agenda reads the CACHED calendar only (never the network) and
   assert.deepEqual(a.deadlines.map((x) => x.title), ['PS 4'], 'only active tasks due within 7 days');
   assert.ok(!JSON.stringify(a).includes('calendar.example'), 'the link is not in the answer');
 });
+test('console: learning milestones are not listed among the deadlines; the milestone setting and the "read now" job exist', async () => {
+  const sb = await sandbox({ config: CONFIG.replace(/ICS_URLS=.*\n/, '') });
+  const d = new Date(); const today = d.toLocaleDateString('sv'); const soon = new Date(d.getTime() + 2 * 86400000).toLocaleDateString('sv');
+  fs.writeFileSync(path.join(sb.inbox, 'tasks.csv'), `\uFEFF状态,分类,任务,截止日,预估耗时,来源,添加时间,备注,类型\r\n进行中,Math,PS 4,${soon},,a,${today},,\r\n进行中,Math,Classification,${soon},,a,${today},第6周,里程碑\r\n`);
+  assert.deepEqual((await req(sb, 'GET', '/api/agenda')).json.deadlines.map((x) => x.title), ['PS 4']);
+  const rows = (await req(sb, 'GET', '/api/tasks')).json.rows; assert.equal(rows.find((r) => r['任务'] === 'Classification')['类型'], '里程碑', 'the page can mark it');
+  assert.equal(validate('BRIEF_MILESTONES', '0')[0], '0'); assert.ok(validate('BRIEF_MILESTONES', 'maybe')[1]);
+  const job = await req(sb, 'POST', '/api/jobs', { body: { kind: 'ingest' } }); assert.equal(job.status, 200); assert.equal(job.json.label, '读取收件箱');
+  for (let i = 0; i < 100 && (await req(sb, 'GET', '/api/jobs/current')).json.state === 'running'; i++) await new Promise((r) => setTimeout(r, 200)); // (no new file in the inbox: no AI call)
+});
 test('console: without a calendar the agenda says so; the notification test runs as a job', async () => {
   const sb = await sandbox({ config: "DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/1/x'\n" });
   assert.equal((await req(sb, 'GET', '/api/agenda')).json.calendar, 'none');

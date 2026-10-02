@@ -29,6 +29,11 @@ try { if (input.tasksFile) tasks = readTasks(input.tasksFile, fs); } catch (e) {
 // A cell edited in Excel can hold a line break (Alt-Enter): in a title it would end the task line and could start a markdown
 // heading or list on the next one. Every text that is printed is made one line here, once, for both views.
 tasks = tasks.map((t) => ({ ...t, '任务': oneLine(t['任务'] || ''), '分类': oneLine(t['分类'] || ''), '预估耗时': oneLine(t['预估耗时'] || '') }));
+// Learning milestones (类型 = 里程碑, from a syllabus schedule) are targets, not deadlines: they get their own line and are never
+// counted, coloured or nagged about as overdue tasks.
+const isGoal = (t) => String(t['类型'] || '').trim() === '里程碑';
+const goals = tasks.filter(isGoal);
+tasks = tasks.filter((t) => !isGoal(t));
 const kind = (t) => statusKind(t['状态']);
 const active = tasks.filter((t) => kind(t) === 'active');
 const pendingTasks = tasks.filter((t) => kind(t) === 'pending');
@@ -53,6 +58,18 @@ const dueToday = withDue.filter((x) => x.left === 0);
 const dueWeek = withDue.filter((x) => x.left > 0 && x.left <= 7);
 const dueLater = withDue.filter((x) => x.left > 7 && x.left <= 30);
 const overdueNote = overdueHidden.length ? `🧹 另有 ${overdueHidden.length} 项逾期更久（最久 ${-overdueHidden[overdueHidden.length - 1].left} 天）：做完的请在 tasks.csv 里改成「完成」，不要的改成「忽略」` : '';
+
+// ---- learning milestones: the ones of the coming week (and of the last three days, in case they slipped) ----
+const activeGoals = goals.filter((t) => kind(t) === 'active');
+const pendingGoals = goals.filter((t) => kind(t) === 'pending');
+const goalsSoon = activeGoals.filter((t) => dueOf(t)).map((t) => ({ t, due: dueOf(t), left: daysBetween(today, dueOf(t)) })).filter((x) => x.left >= -3 && x.left <= 7).sort((a, b) => a.left - b.left);
+const goalsStale = activeGoals.filter((t) => dueOf(t) && daysBetween(today, dueOf(t)) < -3).length;
+const goalsUndated = activeGoals.filter((t) => !dueOf(t)).length;
+const goalWhen = ({ due, left }) => (left < 0 ? `已过 ${-left} 天` : left === 0 ? '今天' : `${left <= 6 ? weekday(due) : due.slice(5)}前`);
+const goalNotes = () => [
+  goalsStale ? `📚 另有 ${goalsStale} 个学习目标已经过了：学完的请在任务页改成「完成」` : '',
+  goalsUndated ? `📚 ${goalsUndated} 个学习里程碑没有可用日期，简报里不会显示` : '',
+].filter(Boolean);
 
 // ---- calendar ----
 const failedCals = Number(input.failed || 0);
@@ -91,9 +108,10 @@ const notes = () => {
   const n = [];
   if (noDueNote) n.push(noDueNote);
   if (overdueNote) n.push(overdueNote);
-  if (pendingTasks.length) {
+  if (pendingTasks.length || pendingGoals.length) {
+    const what = [pendingTasks.length ? `${pendingTasks.length} 条任务` : '', pendingGoals.length ? `${pendingGoals.length} 个学习里程碑` : ''].filter(Boolean).join('、');
     const list = pendingTasks.slice(0, 3).map((t) => `　• ${cutText(esc(t['任务']), 60)}${dueOf(t) ? `（${dueOf(t).slice(5)}）` : '（无日期）'}`);
-    n.push(`🆕 ${pendingTasks.length} 条任务待确认（在控制台的「任务」页确认，或编辑收件夹里的 tasks.csv）\n${list.join('\n')}${pendingTasks.length > 3 ? `\n　…还有 ${pendingTasks.length - 3} 条` : ''}\n　把「待确认」改成「进行中」；不要的改成「忽略」`);
+    n.push([`🆕 ${what}待确认（在控制台的「任务」页确认，或编辑收件夹里的 tasks.csv）`, ...list, pendingTasks.length > 3 ? `　…还有 ${pendingTasks.length - 3} 条` : '', '　把「待确认」改成「进行中」；不要的改成「忽略」'].filter(Boolean).join('\n'));
   }
   if (unknownStatus) n.push(`❓ ${unknownStatus} 项任务的状态看不懂（应为 待确认 / 进行中 / 完成 / 忽略）`);
   if (cachedNote) n.push(cachedNote);
@@ -129,6 +147,8 @@ const buildCompact = () => {
     if (!urgent.length) out.push(tableError ? '❓ 任务表读取失败，今天的任务清单不完整（原因见下）' : '✅ 没有近期要交的任务');
     // tasks due later (8-30 days) are not left out silently: one line with the nearest three and how many there are
     if (dueLater.length) out.push(`🟢 再往后 30 天内还有 ${dueLater.length} 项：${dueLater.slice(0, 3).map(({ t, due }) => `${cutText(esc(t['任务']), 24)}（${due.slice(5)}${oneLine(t['分类'] || '') ? ` · ${cutText(esc(oneLine(t['分类'])), 12)}` : ''}）`).join('、')}${dueLater.length > 3 ? ' 等' : ''}`);
+    if (goalsSoon.length) out.push(`📚 学习进度：${goalsSoon.slice(0, 3).map((x) => `${cutText(esc(x.t['任务']), 40)}（${x.t['分类'] ? `${cutText(esc(x.t['分类']), 12)} · ` : ''}${goalWhen(x)}）`).join('、')}${goalsSoon.length > 3 ? ` 等 ${goalsSoon.length} 项` : ''}`);
+    out.push(...goalNotes());
     if (calendarUnknown) out.push('', '❓ 日历读取失败，今天的日程未知');
     else if (calendars) {
       out.push('', todayEvents.length ? `🗓 **今天 ${todayEvents.length} 项日程**` : '🗓 今天没有日程');
@@ -194,6 +214,8 @@ const buildFull = () => {
     upcoming.push(`**${short(d)}** · ${evs.length} 项${range}${allDay.length ? `\n　全天：${allDay.join('、')}` : ''}`);
   }
   if (!calendarUnknown) add(`🔜 接下来 ${days} 天`, upcoming);
+  add(`📚 学习进度（${goalsSoon.length}）`, goalsSoon.map((x) => `📚 **${esc(x.t['任务'])}** · ${goalWhen(x)}${x.t['分类'] ? ` · _${esc(x.t['分类'])}_` : ''}`).concat(goalNotes()));
+  if (!goalsSoon.length && goalNotes().length) fields[fields.length - 1].name = '📚 学习进度';
   add(`🗂 更远的（30 天内 ${dueLater.length} 项）`, dueLater.slice(0, 5).map(taskLine).concat(dueLater.length > 5 ? [`…还有 ${dueLater.length - 5} 项`] : []));
 
   const color = overdueAll.length ? 0xe74c3c : dueToday.length ? 0xe67e22 : dueWeek.length ? 0xf1c40f : 0x2ecc71;

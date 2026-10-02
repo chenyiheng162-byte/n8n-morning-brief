@@ -2,9 +2,10 @@
 // Direct engine: runs the SAME Code-node sources as the n8n workflow (workflows/src/*.js) in plain Node and delivers the
 // brief to Discord. No n8n is started. Used for
 //   * `run-brief.sh --dry-run`  : build the brief and print it, sending nothing and writing no delivery markers,
+//   * `run-brief.sh --ingest`   : read the inbox now (the console's 「现在读取」): only the ingest step, nothing is sent,
 //   * the fallback in run-brief.sh when n8n cannot be started at all (before any request was accepted),
 //   * tests.
-// Usage: node brief.mjs [--dry-run] [--test] [--run=ID] [--missed=2026-09-28,2026-09-29]
+// Usage: node brief.mjs [--dry-run | --ingest] [--test] [--run=ID] [--missed=2026-09-28,2026-09-29]
 // Exit codes: 0 sent; 4 Discord clearly did not take it (refused, or never connected); 3 unknown (it may have been
 // delivered); 1 failed before sending. Any other ending (a crash, a signal) is judged by run-brief.sh from the attempt record.
 // Settings come from the environment (run-brief.sh sources scripts/env.sh first).
@@ -43,7 +44,7 @@ export function makeHttp(fetchImpl = globalThis.fetch) {
   };
 }
 
-export async function runBrief({ env = process.env, missed = [], dryRun = false, test = false, run = '', fetchImpl = globalThis.fetch, srcDir, log = () => {} } = {}) {
+export async function runBrief({ env = process.env, missed = [], dryRun = false, ingestOnly = false, test = false, run = '', fetchImpl = globalThis.fetch, srcDir, log = () => {} } = {}) {
   const home = env.BRIEF_HOME || path.join(os.homedir(), '.n8n-morning-brief');
   const req = createRequire(path.join(home, 'package.json')); // ical.js lives next to n8n in the runtime folder (or in .test-deps for tests)
   const nodeEnv = { ...env, ...(test || dryRun ? { BRIEF_TEST: '1' } : {}), ...(dryRun ? { BRIEF_DRY_RUN: '1' } : {}) }; // a preview is always labelled as a test
@@ -58,6 +59,15 @@ export async function runBrief({ env = process.env, missed = [], dryRun = false,
     log(`${name}: ${Date.now() - t} ms`);
     return outputs[name];
   };
+  if (ingestOnly) {
+    // Reading the inbox needs no calendar, only today's date in BRIEF_TZ (or the pinned test date).
+    let tz = env.BRIEF_TZ || undefined;
+    try { new Intl.DateTimeFormat('en-CA', { timeZone: tz }); } catch { tz = undefined; } // an invalid zone: the system's
+    const today = /^\d{4}-\d{2}-\d{2}$/.test(env.BRIEF_TODAY || '') ? env.BRIEF_TODAY : new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    outputs['Read calendars'] = { today, days: 0, calendars: 0, events: [], errors: [], warnings: [] };
+    const ing = await step('ingest-files.js', 'Ingest files', outputs['Read calendars']);
+    return { status: 'ingested', ...ing.ingest };
+  }
   const cal = await step('read-calendars.js', 'Read calendars');
   const ing = await step('ingest-files.js', 'Ingest files', cal);
   const brief = await step('build-brief.js', 'Build brief', ing);
@@ -76,6 +86,20 @@ if (process.argv[1] && fs.realpathSync(fileURLToPath(import.meta.url)) === fs.re
   const missedArg = (args.find((a) => a.startsWith('--missed=')) || '').slice(9);
   const runArg = (args.find((a) => a.startsWith('--run=')) || '').slice(6);
   const dryRun = args.includes('--dry-run');
+  if (args.includes('--ingest')) {
+    try {
+      const r = await runBrief({ ingestOnly: true, log: (m) => process.stderr.write(`[brief] ${m}\n`) });
+      const found = [r.newTasks ? `${r.newTasks} 条新任务` : '', r.newMilestones ? `${r.newMilestones} 个学习里程碑` : ''].filter(Boolean).join('、');
+      if (!r.files && !r.remaining && !found) process.stdout.write('收件箱里没有要读的新文件。读过的文件不会再读；想重读一个，在收件箱里点它的「重新读」。\n');
+      else process.stdout.write(`${r.files ? `读完 ${r.files} 个文件` : '这次没有读完的文件'}：${found ? `找到 ${found}（都是「待确认」，到「任务」页确认后才进简报）` : '没有找到新任务'}。\n`);
+      if (r.remaining) process.stdout.write(`还有 ${r.remaining} 个文件没读完，下一次运行（或再点一次「现在读取」）继续。\n`);
+      for (const e of r.errors || []) process.stdout.write(`· ${String(e).replace(/https?:\/\/\S+/g, '<link>')}\n`);
+    } catch (e) {
+      process.stderr.write(`brief.mjs failed: ${String(e.message || e).replace(/https?:\/\/\S+/g, '<link>')}\n`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   try {
     const res = await runBrief({ dryRun, run: runArg, test: args.includes('--test') || dryRun, missed: missedArg.split(',').filter(Boolean), log: (m) => process.stderr.write(`[brief] ${m}\n`) });
     if (dryRun) { process.stdout.write(`${res.message}\n`); process.stderr.write(`[dry-run] nothing was sent; ${res.events} events, ${res.tasks} active tasks, ${res.errors} messages\n`); }

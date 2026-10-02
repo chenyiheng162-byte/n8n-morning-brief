@@ -490,3 +490,50 @@ test('extract-inbox: the text of a document that left the inbox is deleted once 
   assert.ok(left.has(f.notOurs), 'only cache files are touched');
   assert.ok(!left.has(f.goneOld) && !left.has(f.goneOldErr), 'the old text of a removed document is gone');
 });
+
+// ---------- learning milestones (类型 = 里程碑) ----------
+const aiReply = (...replies) => { let i = 0; const bodies = []; const fn = async ({ body }) => { bodies.push(body); return { choices: [{ message: { content: JSON.stringify(replies[Math.min(i++, replies.length - 1)]) } }] }; }; fn.bodies = bodies; return fn; };
+const rowsOf = (inbox) => { const [head, ...rows] = fs.readFileSync(path.join(inbox, 'tasks.csv'), 'utf8').replace(/^﻿/, '').trim().split(/\r\n/); const cols = head.split(','); return { head, rows: rows.map((l) => Object.fromEntries(l.split(',').map((v, i) => [cols[i], v]))) }; };
+
+test('milestones: a syllabus schedule by week becomes dated learning targets (end of that week); past weeks are left out', async () => {
+  const { inbox, env } = setup({ 'stat.txt': TEXT }); // 第 1 周周一 = 2026-08-31, today = 2026-09-30
+  const http = aiReply({ tasks: [], milestones: [
+    { category: 'STAT3612', topic: 'Introduction', week: 2 },               // 2026-09-13: already behind us
+    { category: 'STAT3612', topic: 'Classification', week: 6 },             // Sunday of week 6
+    { category: 'STAT3612', topic: 'Decision trees', week: 7, weekday: 3 }, // the document names a day
+    { category: 'STAT3612', topic: 'Clustering', due: '2026-10-20' },
+    { category: 'STAT3612', topic: 'Classification', week: 6 },             // said twice: added once
+  ] });
+  const r = await runNode('ingest-files.js', { env, nodes, http });
+  const { head, rows } = rowsOf(inbox);
+  assert.equal(head, '状态,分类,任务,截止日,预估耗时,来源,添加时间,备注,类型', 'one extra column, after the usual ones');
+  assert.deepEqual(rows.map((x) => [x['任务'], x['截止日'], x['备注'], x['类型'], x['状态']]), [
+    ['Classification', '2026-10-11', '第6周', '里程碑', '待确认'], ['Decision trees', '2026-10-14', '第7周 周3', '里程碑', '待确认'], ['Clustering', '2026-10-20', '', '里程碑', '待确认']]);
+  assert.equal(r.ingest.newMilestones, 3); assert.equal(r.ingest.newTasks, 0);
+  assert.match(http.bodies[0].messages[0].content, /never invent a study plan/);
+});
+
+test('milestones: an assessment that names its topics gets a target one week before it; too late or unknown ones are skipped', async () => {
+  const { inbox, env } = setup({ 'stat.txt': TEXT });
+  const http = aiReply({ tasks: [{ category: 'STAT3612', title: 'Assignment 2 (Classification)', due: '2026-10-29' }, { category: 'STAT3612', title: 'Quiz 1', due: '2026-10-03' }], milestones: [
+    { category: 'STAT3612', topic: 'Classification', for: 'Assignment 2 (Classification)' },
+    { category: 'STAT3612', topic: 'Chapter 1-2', for: 'Quiz 1' },     // 09-26: already too late to plan for, the quiz itself is in the brief
+    { category: 'STAT3612', topic: 'Something', for: 'No such task' },
+  ] });
+  await runNode('ingest-files.js', { env, nodes, http });
+  const goals = rowsOf(inbox).rows.filter((x) => x['类型'] === '里程碑');
+  assert.deepEqual(goals.map((x) => [x['任务'], x['截止日'], x['备注']]), [['Classification', '2026-10-22', '为「Assignment 2 (Classification)」准备（10-29 截止）']]);
+  assert.equal(rowsOf(inbox).rows.filter((x) => x['类型'] !== '里程碑').length, 2, 'the tasks themselves are added as usual');
+});
+
+test('milestones: without 第 1 周周一 week-based targets are not added and the file says so once; BRIEF_MILESTONES=0 turns them off', async () => {
+  const a = setup({ 'stat.txt': TEXT }, { BRIEF_BASE_DATE: '' });
+  const r = await runNode('ingest-files.js', { env: a.env, nodes, http: aiReply({ tasks: [{ category: 'S', title: 'Essay', due: '2026-10-09' }], milestones: [{ category: 'S', topic: 'A', week: 6 }, { category: 'S', topic: 'B', week: 7 }] }) });
+  assert.equal(rowsOf(a.inbox).rows.length, 1, 'only the task');
+  assert.equal(r.ingest.errors.filter((e) => /stat\.txt 里有 2 个按周排的学习里程碑没有加入：还没设置「第 1 周周一」/.test(e)).length, 1);
+  const b = setup({ 'stat.txt': TEXT }, { BRIEF_MILESTONES: '0' });
+  const http = aiReply({ tasks: [], milestones: [{ category: 'S', topic: 'A', due: '2026-10-20' }] });
+  await runNode('ingest-files.js', { env: b.env, nodes, http });
+  assert.ok(!fs.existsSync(path.join(b.inbox, 'tasks.csv')), 'nothing added');
+  assert.doesNotMatch(http.bodies[0].messages[0].content, /milestones/, 'and the AI is not asked for them');
+});
