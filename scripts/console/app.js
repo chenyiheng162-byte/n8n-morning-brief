@@ -265,7 +265,10 @@ async function viewSetup(view) {
   const o = await refreshOverview(); let cfg = await api('/api/settings');
   const F = (k) => cfg.fields.find((f) => f.key === k) || {};
   const STEPS = [['Discord', 'send'], ['日历', 'calendar-days'], ['AI', 'sparkles'], ['时间', 'clock-3'], ['完成', 'circle-check']];
-  let step = o?.setup?.discord ? (o.setup.calendar ? (o.setup.ai ? 3 : 2) : 1) : 0;
+  // Always opens at the first step: each step shows what is already set (and continues with one click), and the step tabs
+  // above jump straight to any step once Discord is set. (Jumping to the first unfinished step always landed on 时间,
+  // which is never marked as done when the page opens.)
+  let step = 0;
   let timeDone = false;
   const done = () => ({ 0: F('DISCORD_WEBHOOK_URL').set, 1: F('ICS_URLS').set, 2: F('AI_BASE_URL').set && F('AI_MODEL').set, 3: timeDone, 4: false });
   $('#subtitle').textContent = '五步完成设置。密钥和链接只保存在这台电脑上，页面上不会再显示它们。';
@@ -637,10 +640,25 @@ function renderBrief(text) {
   }
   return h('div', { class: 'discord' }, h('div', { class: 'who' }, h('div', { class: 'av' }, icon('sunrise')), h('div', {}, h('b', {}, '每日简报'), h('small', {}, '预览 · 不会发送'))), box);
 }
+// Called every second while a job runs. The drawer of a job is built once and then updated in place: rebuilding it each
+// time replayed its entrance animation and restarted the spinner (the drawer flickered), and lost the scroll position.
 function showJob(j) {
   if (!j || !j.id) return;
   const host = $('#drawerHost'); const running = j.state === 'running';
   const secs = Math.round(((j.endedAt || Date.now()) - j.startedAt) / 1000);
+  if (host._closed === j.id) return; // closed by the reader: not opened again for the same job
+  let drawer = host.querySelector('.drawer');
+  if (!drawer || drawer._job !== j.id) {
+    drawer = h('div', { class: 'drawer', role: 'status' }, h('header', {}, h('span', { class: 'jstate' }), h('b', {}, j.label), h('span', { class: 'faint small num jsecs' }), h('button', { class: 'btn ghost sm icon', 'aria-label': '关闭', onclick: () => { host._closed = j.id; host.replaceChildren(); } }, icon('x', 'sm'))), h('div', { class: 'body' }));
+    drawer._job = j.id; host.replaceChildren(drawer);
+  }
+  drawer.querySelector('.jsecs').textContent = `${secs} 秒`;
+  const st = drawer.querySelector('.jstate');
+  if (st._state !== j.state) { st._state = j.state; st.replaceChildren(running ? h('div', { class: 'spin' }) : h('span', { class: `badge ${j.state === 'done' ? 't-ok' : 't-bad'}` }, h('span', { class: 'dot' }), j.state === 'done' ? '完成' : '失败')); }
+  if (drawer._out === j.output && drawer._shown === j.state) return; // nothing new to show
+  const b = drawer.querySelector('.body');
+  const follow = drawer._out === undefined || b.scrollHeight - b.scrollTop - b.clientHeight < 40; // only follow the end if the reader is there
+  drawer._out = j.output; drawer._shown = j.state;
   let body;
   if (j.kind === 'preview' && j.state === 'done') {
     const text = j.output.split('\n').filter((l) => !/^\[(brief|dry-run)\]|^extract-inbox/.test(l)).join('\n').trim();
@@ -650,10 +668,8 @@ function showJob(j) {
     const term = h('div', { class: 'term' }, h('div', { style: 'padding:8px 0' }, (j.output || (running ? '开始……' : '（没有输出）')).split('\n').map((l, i) => h('div', { class: 'ln' }, h('span', { class: 'no' }, i + 1), h('span', { class: 'tx' }, l || ' ')))));
     body = term;
   }
-  const status = running ? h('div', { class: 'spin' }) : h('span', { class: `badge ${j.state === 'done' ? 't-ok' : 't-bad'}` }, h('span', { class: 'dot' }), j.state === 'done' ? '完成' : '失败');
-  const drawer = h('div', { class: 'drawer', role: 'status' }, h('header', {}, status, h('b', {}, j.label), h('span', { class: 'faint small num' }, `${secs} 秒`), h('button', { class: 'btn ghost sm icon', 'aria-label': '关闭', onclick: () => host.replaceChildren() }, icon('x', 'sm'))), h('div', { class: 'body' }, body));
-  host.replaceChildren(drawer);
-  const b = drawer.querySelector('.body'); if (running) b.scrollTop = b.scrollHeight;
+  b.replaceChildren(...[body].flat());
+  if (running && follow) b.scrollTop = b.scrollHeight;
 }
 
 // ---------------------------------------------------------------- command palette (⌘K) ---------------------------------
